@@ -13,7 +13,7 @@ DB_CONFIG = {
     'server': 'localhost',
     'port': '1434',
     'user': 'sa',
-    'password': 'Ankaref_Staj2026!',
+    'password': os.getenv('DB_PASSWORD'),
     'database': 'IoT_ColdChain'
 }
 
