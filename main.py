@@ -29,3 +29,29 @@ def get_son_durum():
     result = cursor.fetchone()
     conn.close()
     return result
+
+@app.get("/gecmis-veriler")
+def get_gecmis_veriler():
+    try:
+        conn = pymssql.connect(**DB_CONFIG)
+        cursor = conn.cursor(as_dict=True)
+        
+        # Grafikte soldan sağa (eskiden yeniye) doğru düzgün çizilmesi için
+        # önce son 50 veriyi alıyoruz, sonra onları kendi içinde tarihe göre sıralıyoruz.
+        sorgu = """
+        SELECT * FROM (
+            SELECT TOP 50 Temperature, LogDate 
+            FROM TemperatureLogs 
+            ORDER BY LogDate DESC
+        ) AS AltSorgu
+        ORDER BY LogDate ASC
+        """
+        
+        cursor.execute(sorgu)
+        result = cursor.fetchall()  # fetchone() yerine tüm listeyi çekmek için fetchall() kullanıyoruz
+        conn.close()
+        
+        return result
+    
+    except Exception as e:
+        return {"hata": str(e)}
