@@ -68,9 +68,9 @@ class _AnaEkranState extends State<AnaEkran> {
 
   Future<void> veriGetir() async {
     try {
-      // 1. Anlık durumu çek
+      // 1. Anlık durumu çek - IP ADRESİ GÜNCELLENDİ
       final responseDurum = await http.get(
-        Uri.parse('http://127.0.0.1:8000/son-durum'),
+        Uri.parse('http://192.168.1.11:8000/son-durum'),
       );
 
       if (responseDurum.statusCode == 200) {
@@ -105,10 +105,10 @@ class _AnaEkranState extends State<AnaEkran> {
         }
       }
 
-      // 2. Geçmiş verileri çekip grafiği güncelle (Sensör çalışıyorsa)
+      // 2. Geçmiş verileri çekip grafiği güncelle (Sensör çalışıyorsa) - IP ADRESİ GÜNCELLENDİ
       if (!sensorKoptu) {
         final responseGecmis = await http.get(
-          Uri.parse('http://127.0.0.1:8000/gecmis-veriler'),
+          Uri.parse('http://192.168.1.11:8000/gecmis-veriler'),
         );
         if (responseGecmis.statusCode == 200) {
           final List<dynamic> gecmisData = json.decode(responseGecmis.body);
