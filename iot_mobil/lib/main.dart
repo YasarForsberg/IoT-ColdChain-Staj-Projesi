@@ -5,8 +5,325 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'dart:typed_data'; // Israrcı alarm bayrağı (Int32List) için gerekli
 
-void main() {
+// ==========================================
+// 1. ARKA PLAN SERVİSİ KURULUMU
+// ==========================================
+Future<void> initializeService() async {
+  final service = FlutterBackgroundService();
+
+  const AndroidNotificationChannel channel = AndroidNotificationChannel(
+    'iot_arkaplan_kanali',
+    'IoT Cold Chain Arka Plan Servisi',
+    description: 'Uygulama kapalıyken sıcaklık takibi yapar',
+    importance: Importance.low,
+  );
+
+  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+      FlutterLocalNotificationsPlugin();
+
+  await flutterLocalNotificationsPlugin
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >()
+      ?.createNotificationChannel(channel);
+
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart,
+      autoStart: true,
+      isForegroundMode: true,
+      notificationChannelId: 'iot_arkaplan_kanali',
+      initialNotificationTitle: 'IoT Cold Chain Aktif',
+      initialNotificationContent: 'Arka planda sıcaklık izleniyor...',
+      foregroundServiceNotificationId: 888,
+    ),
+    iosConfiguration: IosConfiguration(autoStart: true, onForeground: onStart),
+  );
+}
+
+// ==========================================
+// 2. EKRAN KAPALIYKEN ÇALIŞACAK MOTOR
+// ==========================================
+@pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+
+  service.on('stopService').listen((event) {
+    service.stopSelf();
+  });
+
+  final FlutterLocalNotificationsPlugin bgBildirim =
+      FlutterLocalNotificationsPlugin();
+
+  String sonLogTarihi = '';
+  int ayniVeriSayaci = 0;
+
+  bool bildirimGonderildiSicaklik = false;
+  bool bildirimGonderildiSunucu = false;
+  bool bildirimGonderildiSensor = false;
+
+  DateTime? sicaklikHataZamani;
+  DateTime? sensorHataZamani;
+  DateTime? sunucuHataZamani;
+
+  bool alarmCaldiSicaklik = false;
+  bool alarmCaldiSensor = false;
+  bool alarmCaldiSunucu = false;
+
+  Timer.periodic(const Duration(seconds: 3), (timer) async {
+    try {
+      final response = await http
+          .get(Uri.parse('http://192.168.1.11:8000/son-durum'))
+          .timeout(const Duration(seconds: 3));
+
+      if (response.statusCode == 200) {
+        sunucuHataZamani = null;
+        alarmCaldiSunucu = false;
+
+        final data = json.decode(response.body);
+
+        if (data != null && data['Temperature'] != null) {
+          double anlikSicaklik = data['Temperature'];
+          String gelenTarih = data['LogDate'];
+
+          if (gelenTarih == sonLogTarihi) {
+            ayniVeriSayaci++;
+            // 1. DURUM: SENSÖR KOPTU KONTROLÜ
+            if (ayniVeriSayaci >= 3) {
+              sensorHataZamani ??= DateTime.now();
+
+              if (service is AndroidServiceInstance) {
+                service.setForegroundNotificationInfo(
+                  title: 'IoT Cold Chain (Sensör Koptu)',
+                  content: 'Donanımdan veri alınamıyor!',
+                );
+              }
+
+              if (DateTime.now().difference(sensorHataZamani!).inSeconds >=
+                  60) {
+                if (!alarmCaldiSensor) {
+                  bgBildirim.show(
+                    id: 11,
+                    title: '🚨 ALARM: SENSÖR KOPTU!',
+                    body: 'TAM 1 DAKİKADIR DONANIMDAN VERİ ALINAMIYOR!',
+                    notificationDetails: NotificationDetails(
+                      android: AndroidNotificationDetails(
+                        'alarm_kanali',
+                        'Acil Alarmlar',
+                        channelDescription: 'Kritik Alarm Uyarıları',
+                        importance: Importance.max,
+                        priority: Priority.high,
+                        color: Colors.red,
+                        enableVibration: true,
+                        fullScreenIntent: true,
+                        additionalFlags: Int32List.fromList([4]),
+                      ),
+                    ),
+                  );
+                  alarmCaldiSensor = true;
+                }
+              } else if (!bildirimGonderildiSensor && !alarmCaldiSensor) {
+                bgBildirim.show(
+                  id: 1,
+                  title: '📡 Sensör Bağlantısı Koptu',
+                  body: 'Donanımdan veri gelmiyor, durum izleniyor...',
+                  notificationDetails: const NotificationDetails(
+                    android: AndroidNotificationDetails(
+                      'iot_kanali',
+                      'Sistem Uyarıları',
+                      channelDescription: 'Sistem Uyarıları',
+                      importance: Importance.max,
+                      priority: Priority.high,
+                    ),
+                  ),
+                );
+                bildirimGonderildiSensor = true;
+              }
+            }
+          } else {
+            sonLogTarihi = gelenTarih;
+            ayniVeriSayaci = 0;
+            bildirimGonderildiSensor = false;
+            bildirimGonderildiSunucu = false;
+            sensorHataZamani = null;
+            alarmCaldiSensor = false;
+
+            if (service is AndroidServiceInstance) {
+              service.setForegroundNotificationInfo(
+                title: 'IoT Cold Chain Aktif',
+                content:
+                    'Anlık Sıcaklık: ${anlikSicaklik.toStringAsFixed(1)}°C',
+              );
+            }
+
+            // 2. DURUM: KRİTİK SICAKLIK KONTROLÜ
+            if (anlikSicaklik > 8.0) {
+              sicaklikHataZamani ??= DateTime.now();
+
+              if (DateTime.now().difference(sicaklikHataZamani!).inSeconds >=
+                  60) {
+                if (!alarmCaldiSicaklik) {
+                  bgBildirim.show(
+                    id: 12,
+                    title: '🚨 ALARM: KRİTİK SICAKLIK!',
+                    body:
+                        'SICAKLIK 1 DAKİKADIR EŞİĞİN ÜZERİNDE (${anlikSicaklik.toStringAsFixed(1)}°C)!',
+                    notificationDetails: NotificationDetails(
+                      android: AndroidNotificationDetails(
+                        'alarm_kanali',
+                        'Acil Alarmlar',
+                        channelDescription: 'Kritik Alarm Uyarıları',
+                        importance: Importance.max,
+                        priority: Priority.high,
+                        color: Colors.red,
+                        enableVibration: true,
+                        fullScreenIntent: true,
+                        additionalFlags: Int32List.fromList([4]),
+                      ),
+                    ),
+                  );
+                  alarmCaldiSicaklik = true;
+                }
+              } else if (!bildirimGonderildiSicaklik && !alarmCaldiSicaklik) {
+                bgBildirim.show(
+                  id: 2,
+                  title: '⚠️ Sıcaklık Uyarısı',
+                  body: 'Sıcaklık ${anlikSicaklik.toStringAsFixed(1)}°C oldu.',
+                  notificationDetails: const NotificationDetails(
+                    android: AndroidNotificationDetails(
+                      'iot_kanali',
+                      'Sistem Uyarıları',
+                      channelDescription: 'Sistem Uyarıları',
+                      importance: Importance.max,
+                      priority: Priority.high,
+                      color: Colors.orange,
+                    ),
+                  ),
+                );
+                bildirimGonderildiSicaklik = true;
+              }
+            } else {
+              bildirimGonderildiSicaklik = false;
+              sicaklikHataZamani = null;
+              alarmCaldiSicaklik = false;
+            }
+          }
+        }
+      } else {
+        // 3. DURUM: SUNUCU YANIT VERMİYOR
+        sunucuHataZamani ??= DateTime.now();
+
+        if (service is AndroidServiceInstance) {
+          service.setForegroundNotificationInfo(
+            title: 'IoT Cold Chain (Sunucu Hatası)',
+            content: 'Merkezi sunucu cevap vermiyor.',
+          );
+        }
+
+        if (DateTime.now().difference(sunucuHataZamani!).inSeconds >= 60) {
+          if (!alarmCaldiSunucu) {
+            bgBildirim.show(
+              id: 13,
+              title: '🚨 ALARM: SUNUCU ÇÖKTÜ!',
+              body: 'TAM 1 DAKİKADIR SUNUCUDAN YANIT ALINAMIYOR!',
+              notificationDetails: NotificationDetails(
+                android: AndroidNotificationDetails(
+                  'alarm_kanali',
+                  'Acil Alarmlar',
+                  channelDescription: 'Kritik Alarm Uyarıları',
+                  importance: Importance.max,
+                  priority: Priority.high,
+                  color: Colors.red,
+                  enableVibration: true,
+                  fullScreenIntent: true,
+                  additionalFlags: Int32List.fromList([4]),
+                ),
+              ),
+            );
+            alarmCaldiSunucu = true;
+          }
+        } else if (!bildirimGonderildiSunucu && !alarmCaldiSunucu) {
+          bgBildirim.show(
+            id: 3,
+            title: '🔌 Sunucu Hatası',
+            body: 'Merkezi sunucu cevap vermiyor.',
+            notificationDetails: const NotificationDetails(
+              android: AndroidNotificationDetails(
+                'iot_kanali',
+                'Sistem Uyarıları',
+                channelDescription: 'Sistem Uyarıları',
+                importance: Importance.max,
+                priority: Priority.high,
+              ),
+            ),
+          );
+          bildirimGonderildiSunucu = true;
+        }
+      }
+    } catch (e) {
+      // 3. DURUM: SUNUCUYA ULAŞILAMIYOR (BAĞLANTI KOPUK)
+      sunucuHataZamani ??= DateTime.now();
+
+      if (service is AndroidServiceInstance) {
+        service.setForegroundNotificationInfo(
+          title: 'IoT Cold Chain (Bağlantı Yok)',
+          content: 'Sunucuya ulaşılamıyor.',
+        );
+      }
+
+      if (DateTime.now().difference(sunucuHataZamani!).inSeconds >= 60) {
+        if (!alarmCaldiSunucu) {
+          bgBildirim.show(
+            id: 13,
+            title: '🚨 ALARM: BAĞLANTI KOPTU!',
+            body: 'TAM 1 DAKİKADIR SİSTEME ULAŞILAMIYOR!',
+            notificationDetails: NotificationDetails(
+              android: AndroidNotificationDetails(
+                'alarm_kanali',
+                'Acil Alarmlar',
+                channelDescription: 'Kritik Alarm Uyarıları',
+                importance: Importance.max,
+                priority: Priority.high,
+                color: Colors.red,
+                enableVibration: true,
+                fullScreenIntent: true,
+                additionalFlags: Int32List.fromList([4]),
+              ),
+            ),
+          );
+          alarmCaldiSunucu = true;
+        }
+      } else if (!bildirimGonderildiSunucu && !alarmCaldiSunucu) {
+        bgBildirim.show(
+          id: 3,
+          title: '🔌 Sunucu Bağlantısı Koptu',
+          body: 'FastAPI sunucusuna ulaşılamıyor.',
+          notificationDetails: const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'iot_kanali',
+              'Sistem Uyarıları',
+              channelDescription: 'Sistem Uyarıları',
+              importance: Importance.max,
+              priority: Priority.high,
+            ),
+          ),
+        );
+        bildirimGonderildiSunucu = true;
+      }
+    }
+  });
+}
+
+// ==========================================
+// 3. UYGULAMANIN ANA BAŞLANGIÇ NOKTASI
+// ==========================================
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeService();
   runApp(const IoTApp());
 }
 
@@ -16,69 +333,124 @@ class IoTApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'TermoTakip',
+      title: 'IoT Cold Chain',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF0A0E21),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-        ),
       ),
       home: const AnaEkran(),
     );
   }
 }
 
-// Bağlantı durumlarını net bir şekilde ayırıyoruz
 enum BaglantiDurumu { baglaniliyor, aktif, sensorBekleniyor, sunucuHatasi }
 
 class AnaEkran extends StatefulWidget {
   const AnaEkran({super.key});
-
   @override
   State<AnaEkran> createState() => _AnaEkranState();
 }
 
-class _AnaEkranState extends State<AnaEkran> {
+class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
   String sonLogTarihi = '';
   int ayniVeriSayaci = 0;
-
   BaglantiDurumu durum = BaglantiDurumu.baglaniliyor;
   bool esikAsildi = false;
   double anlikSicaklik = 0.0;
   final double ESIK_DEGER = 8.0;
-
   List<FlSpot> grafikVerileri = [];
   Timer? timer;
+
+  final FlutterLocalNotificationsPlugin _bildirimEklentisi =
+      FlutterLocalNotificationsPlugin();
+
+  bool bildirimGonderildiSicaklik = false;
+  bool bildirimGonderildiSunucu = false;
+  bool bildirimGonderildiSensor = false;
+
+  bool arkaPlanAktif = true;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    _arkaPlanDurumunuKontrolEt();
+
+    bildirimSisteminiBaslat();
     veriGetir();
     timer = Timer.periodic(
-      const Duration(seconds: 2),
+      const Duration(seconds: 3),
       (Timer t) => veriGetir(),
     );
   }
 
+  Future<void> _arkaPlanDurumunuKontrolEt() async {
+    final service = FlutterBackgroundService();
+    bool calisiyorMu = await service.isRunning();
+    setState(() {
+      arkaPlanAktif = calisiyorMu;
+    });
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      FlutterBackgroundService().invoke('stopService');
+    }
+  }
+
+  Future<void> bildirimSisteminiBaslat() async {
+    const AndroidInitializationSettings androidAyarlari =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const InitializationSettings kurulumAyarlari = InitializationSettings(
+      android: androidAyarlari,
+    );
+    await _bildirimEklentisi.initialize(settings: kurulumAyarlari);
+
+    final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+        _bildirimEklentisi
+            .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin
+            >();
+    if (androidImplementation != null) {
+      await androidImplementation.requestNotificationsPermission();
+    }
+  }
+
+  Future<void> bildirimGonder(int id, String baslik, String icerik) async {
+    const AndroidNotificationDetails androidDetay = AndroidNotificationDetails(
+      'iot_kanali',
+      'Sistem Uyarıları',
+      importance: Importance.max,
+      priority: Priority.high,
+      enableVibration: true,
+      color: Colors.red,
+    );
+    await _bildirimEklentisi.show(
+      id: id,
+      title: baslik,
+      body: icerik,
+      notificationDetails: const NotificationDetails(android: androidDetay),
+    );
+  }
+
   Future<void> veriGetir() async {
     try {
-      // 3 Saniye içinde sunucu cevap vermezse Timeout (Sunucu Hatası) sayılacak
       final responseDurum = await http
           .get(Uri.parse('http://192.168.1.11:8000/son-durum'))
           .timeout(const Duration(seconds: 3));
 
       if (responseDurum.statusCode == 200) {
         final data = json.decode(responseDurum.body);
-
         if (data != null && data['Temperature'] != null) {
           setState(() {
             double hamSicaklik = data['Temperature'];
@@ -86,57 +458,81 @@ class _AnaEkranState extends State<AnaEkran> {
 
             if (gelenTarih == sonLogTarihi) {
               ayniVeriSayaci++;
-              // Sunucu çalışıyor ama sensörden 5 turdur YENİ veri gelmiyor
               if (ayniVeriSayaci >= 5) {
                 durum = BaglantiDurumu.sensorBekleniyor;
                 esikAsildi = false;
+                if (!bildirimGonderildiSensor) {
+                  bildirimGonder(
+                    1,
+                    '📡 SENSÖR BAĞLANTISI KOPTU',
+                    'Donanımdan veri gelmiyor!',
+                  );
+                  bildirimGonderildiSensor = true;
+                }
               }
             } else {
-              // Her şey kusursuz
               sonLogTarihi = gelenTarih;
               ayniVeriSayaci = 0;
               durum = BaglantiDurumu.aktif;
               anlikSicaklik = hamSicaklik;
               esikAsildi = anlikSicaklik > ESIK_DEGER;
+
+              bildirimGonderildiSunucu = false;
+              bildirimGonderildiSensor = false;
+
+              if (esikAsildi) {
+                if (!bildirimGonderildiSicaklik) {
+                  bildirimGonder(
+                    2,
+                    '⚠️ KRİTİK SICAKLIK UYARISI',
+                    'Sıcaklık ${anlikSicaklik.toStringAsFixed(1)}°C seviyesine ulaştı!',
+                  );
+                  bildirimGonderildiSicaklik = true;
+                }
+              } else {
+                bildirimGonderildiSicaklik = false;
+              }
             }
           });
         }
       } else {
-        // Sunucu hata kodu döndürdü (örn: 500)
-        setState(() => durum = BaglantiDurumu.sunucuHatasi);
+        setState(() {
+          durum = BaglantiDurumu.sunucuHatasi;
+          if (!bildirimGonderildiSunucu) {
+            bildirimGonder(3, '🔌 SUNUCU HATASI', 'Sunucu cevap vermiyor.');
+            bildirimGonderildiSunucu = true;
+          }
+        });
       }
 
-      // Sunucu tamamen çökmediyse geçmiş verileri de çek
       if (durum != BaglantiDurumu.sunucuHatasi) {
         final responseGecmis = await http
             .get(Uri.parse('http://192.168.1.11:8000/gecmis-veriler'))
             .timeout(const Duration(seconds: 3));
-
         if (responseGecmis.statusCode == 200) {
           final List<dynamic> gecmisData = json.decode(responseGecmis.body);
-
-          // EKSİĞİMİZİ GİDERDİK: Gerçekten sadece SON 50 veriyi alıyoruz
           final son50Veri = gecmisData.length > 50
               ? gecmisData.sublist(gecmisData.length - 50)
               : gecmisData;
-
           List<FlSpot> noktalar = [];
           for (int i = 0; i < son50Veri.length; i++) {
             noktalar.add(
               FlSpot(i.toDouble(), son50Veri[i]['Temperature'].toDouble()),
             );
           }
-
           setState(() {
             grafikVerileri = noktalar;
           });
         }
       }
     } catch (e) {
-      // Ağ hatası veya Timeout (Wi-Fi kapalı veya FastAPI sunucusu çökmüş)
       setState(() {
         durum = BaglantiDurumu.sunucuHatasi;
         esikAsildi = false;
+        if (!bildirimGonderildiSunucu) {
+          bildirimGonder(3, '🔌 SUNUCU BAĞLANTISI KOPTU', 'Ağa ulaşılamıyor.');
+          bildirimGonderildiSunucu = true;
+        }
       });
     }
   }
@@ -165,7 +561,6 @@ class _AnaEkranState extends State<AnaEkran> {
 
   @override
   Widget build(BuildContext context) {
-    // Arayüzdeki yazı ve renkleri Durum Makinesine göre belirliyoruz
     Color aktifRenk;
     String merkezYazi;
     double yaziBoyutu;
@@ -240,15 +635,77 @@ class _AnaEkranState extends State<AnaEkran> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text(
-                    'TERMOTAKİP IOT',
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.poppins(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 2,
-                      color: Colors.white70,
-                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const SizedBox(width: 48),
+                      Text(
+                        'IoT Cold Chain',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.poppins(
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 2,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: arkaPlanAktif
+                              ? Colors.red.withOpacity(0.1)
+                              : Colors.green.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: arkaPlanAktif
+                                ? Colors.red.withOpacity(0.3)
+                                : Colors.green.withOpacity(0.3),
+                          ),
+                        ),
+                        child: IconButton(
+                          icon: Icon(
+                            arkaPlanAktif
+                                ? Icons.stop_rounded
+                                : Icons.play_arrow_rounded,
+                            size: 24,
+                          ),
+                          color: arkaPlanAktif
+                              ? Colors.redAccent
+                              : Colors.greenAccent,
+                          tooltip: arkaPlanAktif
+                              ? 'Takibi Durdur'
+                              : 'Takibi Başlat',
+                          onPressed: () async {
+                            final service = FlutterBackgroundService();
+
+                            if (arkaPlanAktif) {
+                              service.invoke('stopService');
+                              setState(() {
+                                arkaPlanAktif = false;
+                              });
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Arka plan takibi durduruldu.'),
+                                  backgroundColor: Colors.redAccent,
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            } else {
+                              await service.startService();
+                              setState(() {
+                                arkaPlanAktif = true;
+                              });
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Arka plan takibi başlatıldı.'),
+                                  backgroundColor: Colors.green,
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            }
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 30),
                   _buildGlassCard(
