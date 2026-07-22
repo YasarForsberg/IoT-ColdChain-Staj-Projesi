@@ -14,6 +14,8 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
+        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
+        
         <service
             android:name="id.flutter.flutter_background_service.BackgroundService"
             android:foregroundServiceType="dataSync"

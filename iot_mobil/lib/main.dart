@@ -7,11 +7,23 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
-import 'dart:typed_data'; // Israrcı alarm bayrağı (Int32List) için gerekli
+import 'package:audioplayers/audioplayers.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ==========================================
-// 1. ARKA PLAN SERVİSİ KURULUMU
+// YENİ VE TEMİZ BİLDİRİM TETİKLEYİCİSİ
 // ==========================================
+@pragma('vm:entry-point')
+void notificationTapBackground(NotificationResponse response) {
+  WidgetsFlutterBinding.ensureInitialized();
+  DartPluginRegistrant.ensureInitialized();
+
+  if (response.actionId == 'alarm_durdur' ||
+      response.payload == 'alarm_durdur') {
+    FlutterBackgroundService().invoke('stopAlarmSound');
+  }
+}
+
 Future<void> initializeService() async {
   final service = FlutterBackgroundService();
 
@@ -45,19 +57,43 @@ Future<void> initializeService() async {
   );
 }
 
-// ==========================================
-// 2. EKRAN KAPALIYKEN ÇALIŞACAK MOTOR
-// ==========================================
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
 
-  service.on('stopService').listen((event) {
+  final AudioPlayer alarmPlayer = AudioPlayer(playerId: 'iot_acil_alarm');
+
+  service.on('stopService').listen((event) async {
+    await alarmPlayer.stop();
     service.stopSelf();
+  });
+
+  service.on('stopAlarmSound').listen((event) async {
+    await alarmPlayer.stop();
+    final bgBildirim = FlutterLocalNotificationsPlugin();
+    bgBildirim.cancel(id: 11);
+    bgBildirim.cancel(id: 12);
+    bgBildirim.cancel(id: 13);
   });
 
   final FlutterLocalNotificationsPlugin bgBildirim =
       FlutterLocalNotificationsPlugin();
+
+  bgBildirim.initialize(
+    settings: const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+    ),
+    onDidReceiveNotificationResponse: (NotificationResponse response) async {
+      if (response.actionId == 'alarm_durdur' ||
+          response.payload == 'alarm_durdur') {
+        await alarmPlayer.stop();
+        bgBildirim.cancel(id: 11);
+        bgBildirim.cancel(id: 12);
+        bgBildirim.cancel(id: 13);
+      }
+    },
+    onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
+  );
 
   String sonLogTarihi = '';
   int ayniVeriSayaci = 0;
@@ -76,13 +112,18 @@ void onStart(ServiceInstance service) async {
 
   Timer.periodic(const Duration(seconds: 3), (timer) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final String dinamikIp = prefs.getString('sunucu_ip') ?? '192.168.1.11';
+
       final response = await http
-          .get(Uri.parse('http://192.168.1.11:8000/son-durum'))
+          .get(Uri.parse('http://$dinamikIp:8000/son-durum'))
           .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
+        if (alarmCaldiSunucu) await alarmPlayer.stop();
         sunucuHataZamani = null;
         alarmCaldiSunucu = false;
+        bildirimGonderildiSunucu = false;
 
         final data = json.decode(response.body);
 
@@ -92,7 +133,6 @@ void onStart(ServiceInstance service) async {
 
           if (gelenTarih == sonLogTarihi) {
             ayniVeriSayaci++;
-            // 1. DURUM: SENSÖR KOPTU KONTROLÜ
             if (ayniVeriSayaci >= 3) {
               sensorHataZamani ??= DateTime.now();
 
@@ -106,21 +146,34 @@ void onStart(ServiceInstance service) async {
               if (DateTime.now().difference(sensorHataZamani!).inSeconds >=
                   60) {
                 if (!alarmCaldiSensor) {
+                  await alarmPlayer.setReleaseMode(ReleaseMode.loop);
+                  await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
+
                   bgBildirim.show(
                     id: 11,
                     title: '🚨 ALARM: SENSÖR KOPTU!',
                     body: 'TAM 1 DAKİKADIR DONANIMDAN VERİ ALINAMIYOR!',
-                    notificationDetails: NotificationDetails(
+                    payload: 'alarm_durdur',
+                    notificationDetails: const NotificationDetails(
                       android: AndroidNotificationDetails(
-                        'alarm_kanali',
-                        'Acil Alarmlar',
-                        channelDescription: 'Kritik Alarm Uyarıları',
+                        'sessiz_gorsel_alarm',
+                        'Görsel Alarm Sistemi',
+                        channelDescription:
+                            'Sesi oynatıcı tarafından yönetilen alarmlar',
                         importance: Importance.max,
                         priority: Priority.high,
                         color: Colors.red,
                         enableVibration: true,
+                        playSound: false,
                         fullScreenIntent: true,
-                        additionalFlags: Int32List.fromList([4]),
+                        actions: <AndroidNotificationAction>[
+                          AndroidNotificationAction(
+                            'alarm_durdur',
+                            'ALARMI KAPAT',
+                            showsUserInterface: false,
+                            cancelNotification: true,
+                          ),
+                        ],
                       ),
                     ),
                   );
@@ -145,10 +198,10 @@ void onStart(ServiceInstance service) async {
               }
             }
           } else {
+            if (alarmCaldiSensor) await alarmPlayer.stop();
             sonLogTarihi = gelenTarih;
             ayniVeriSayaci = 0;
             bildirimGonderildiSensor = false;
-            bildirimGonderildiSunucu = false;
             sensorHataZamani = null;
             alarmCaldiSensor = false;
 
@@ -160,29 +213,41 @@ void onStart(ServiceInstance service) async {
               );
             }
 
-            // 2. DURUM: KRİTİK SICAKLIK KONTROLÜ
             if (anlikSicaklik > 8.0) {
               sicaklikHataZamani ??= DateTime.now();
 
               if (DateTime.now().difference(sicaklikHataZamani!).inSeconds >=
                   60) {
                 if (!alarmCaldiSicaklik) {
+                  await alarmPlayer.setReleaseMode(ReleaseMode.loop);
+                  await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
+
                   bgBildirim.show(
                     id: 12,
                     title: '🚨 ALARM: KRİTİK SICAKLIK!',
                     body:
                         'SICAKLIK 1 DAKİKADIR EŞİĞİN ÜZERİNDE (${anlikSicaklik.toStringAsFixed(1)}°C)!',
-                    notificationDetails: NotificationDetails(
+                    payload: 'alarm_durdur',
+                    notificationDetails: const NotificationDetails(
                       android: AndroidNotificationDetails(
-                        'alarm_kanali',
-                        'Acil Alarmlar',
-                        channelDescription: 'Kritik Alarm Uyarıları',
+                        'sessiz_gorsel_alarm',
+                        'Görsel Alarm Sistemi',
+                        channelDescription:
+                            'Sesi oynatıcı tarafından yönetilen alarmlar',
                         importance: Importance.max,
                         priority: Priority.high,
                         color: Colors.red,
                         enableVibration: true,
+                        playSound: false,
                         fullScreenIntent: true,
-                        additionalFlags: Int32List.fromList([4]),
+                        actions: <AndroidNotificationAction>[
+                          AndroidNotificationAction(
+                            'alarm_durdur',
+                            'ALARMI KAPAT',
+                            showsUserInterface: false,
+                            cancelNotification: true,
+                          ),
+                        ],
                       ),
                     ),
                   );
@@ -207,6 +272,7 @@ void onStart(ServiceInstance service) async {
                 bildirimGonderildiSicaklik = true;
               }
             } else {
+              if (alarmCaldiSicaklik) await alarmPlayer.stop();
               bildirimGonderildiSicaklik = false;
               sicaklikHataZamani = null;
               alarmCaldiSicaklik = false;
@@ -214,7 +280,6 @@ void onStart(ServiceInstance service) async {
           }
         }
       } else {
-        // 3. DURUM: SUNUCU YANIT VERMİYOR
         sunucuHataZamani ??= DateTime.now();
 
         if (service is AndroidServiceInstance) {
@@ -226,21 +291,34 @@ void onStart(ServiceInstance service) async {
 
         if (DateTime.now().difference(sunucuHataZamani!).inSeconds >= 60) {
           if (!alarmCaldiSunucu) {
+            await alarmPlayer.setReleaseMode(ReleaseMode.loop);
+            await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
+
             bgBildirim.show(
               id: 13,
               title: '🚨 ALARM: SUNUCU ÇÖKTÜ!',
               body: 'TAM 1 DAKİKADIR SUNUCUDAN YANIT ALINAMIYOR!',
-              notificationDetails: NotificationDetails(
+              payload: 'alarm_durdur',
+              notificationDetails: const NotificationDetails(
                 android: AndroidNotificationDetails(
-                  'alarm_kanali',
-                  'Acil Alarmlar',
-                  channelDescription: 'Kritik Alarm Uyarıları',
+                  'sessiz_gorsel_alarm',
+                  'Görsel Alarm Sistemi',
+                  channelDescription:
+                      'Sesi oynatıcı tarafından yönetilen alarmlar',
                   importance: Importance.max,
                   priority: Priority.high,
                   color: Colors.red,
                   enableVibration: true,
+                  playSound: false,
                   fullScreenIntent: true,
-                  additionalFlags: Int32List.fromList([4]),
+                  actions: <AndroidNotificationAction>[
+                    AndroidNotificationAction(
+                      'alarm_durdur',
+                      'ALARMI KAPAT',
+                      showsUserInterface: false,
+                      cancelNotification: true,
+                    ),
+                  ],
                 ),
               ),
             );
@@ -265,7 +343,6 @@ void onStart(ServiceInstance service) async {
         }
       }
     } catch (e) {
-      // 3. DURUM: SUNUCUYA ULAŞILAMIYOR (BAĞLANTI KOPUK)
       sunucuHataZamani ??= DateTime.now();
 
       if (service is AndroidServiceInstance) {
@@ -277,21 +354,34 @@ void onStart(ServiceInstance service) async {
 
       if (DateTime.now().difference(sunucuHataZamani!).inSeconds >= 60) {
         if (!alarmCaldiSunucu) {
+          await alarmPlayer.setReleaseMode(ReleaseMode.loop);
+          await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
+
           bgBildirim.show(
             id: 13,
             title: '🚨 ALARM: BAĞLANTI KOPTU!',
             body: 'TAM 1 DAKİKADIR SİSTEME ULAŞILAMIYOR!',
-            notificationDetails: NotificationDetails(
+            payload: 'alarm_durdur',
+            notificationDetails: const NotificationDetails(
               android: AndroidNotificationDetails(
-                'alarm_kanali',
-                'Acil Alarmlar',
-                channelDescription: 'Kritik Alarm Uyarıları',
+                'sessiz_gorsel_alarm',
+                'Görsel Alarm Sistemi',
+                channelDescription:
+                    'Sesi oynatıcı tarafından yönetilen alarmlar',
                 importance: Importance.max,
                 priority: Priority.high,
                 color: Colors.red,
                 enableVibration: true,
+                playSound: false,
                 fullScreenIntent: true,
-                additionalFlags: Int32List.fromList([4]),
+                actions: <AndroidNotificationAction>[
+                  AndroidNotificationAction(
+                    'alarm_durdur',
+                    'ALARMI KAPAT',
+                    showsUserInterface: false,
+                    cancelNotification: true,
+                  ),
+                ],
               ),
             ),
           );
@@ -318,9 +408,6 @@ void onStart(ServiceInstance service) async {
   });
 }
 
-// ==========================================
-// 3. UYGULAMANIN ANA BAŞLANGIÇ NOKTASI
-// ==========================================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeService();
@@ -371,19 +458,29 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
 
   bool arkaPlanAktif = true;
 
+  String sunucuIp = '192.168.1.11';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
+    _ayarlariYukle();
     _arkaPlanDurumunuKontrolEt();
-
     bildirimSisteminiBaslat();
+
     veriGetir();
     timer = Timer.periodic(
       const Duration(seconds: 3),
       (Timer t) => veriGetir(),
     );
+  }
+
+  Future<void> _ayarlariYukle() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      sunucuIp = prefs.getString('sunucu_ip') ?? '192.168.1.11';
+    });
   }
 
   Future<void> _arkaPlanDurumunuKontrolEt() async {
@@ -414,7 +511,17 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
     const InitializationSettings kurulumAyarlari = InitializationSettings(
       android: androidAyarlari,
     );
-    await _bildirimEklentisi.initialize(settings: kurulumAyarlari);
+
+    await _bildirimEklentisi.initialize(
+      settings: kurulumAyarlari,
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
+        if (response.actionId == 'alarm_durdur' ||
+            response.payload == 'alarm_durdur') {
+          FlutterBackgroundService().invoke('stopAlarmSound');
+        }
+      },
+      onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
+    );
 
     final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
         _bildirimEklentisi
@@ -446,7 +553,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
   Future<void> veriGetir() async {
     try {
       final responseDurum = await http
-          .get(Uri.parse('http://192.168.1.11:8000/son-durum'))
+          .get(Uri.parse('http://$sunucuIp:8000/son-durum'))
           .timeout(const Duration(seconds: 3));
 
       if (responseDurum.statusCode == 200) {
@@ -507,7 +614,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
 
       if (durum != BaglantiDurumu.sunucuHatasi) {
         final responseGecmis = await http
-            .get(Uri.parse('http://192.168.1.11:8000/gecmis-veriler'))
+            .get(Uri.parse('http://$sunucuIp:8000/gecmis-veriler'))
             .timeout(const Duration(seconds: 3));
         if (responseGecmis.statusCode == 200) {
           final List<dynamic> gecmisData = json.decode(responseGecmis.body);
@@ -535,6 +642,97 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
         }
       });
     }
+  }
+
+  Future<void> _ayarlariGoster() async {
+    TextEditingController ipController = TextEditingController(text: sunucuIp);
+
+    await showDialog(
+      context: context,
+      barrierColor: Colors.black.withOpacity(0.5),
+      builder: (context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          child: _buildGlassCard(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.settings, color: Colors.cyanAccent),
+                    const SizedBox(width: 10),
+                    Text(
+                      'SİSTEM AYARLARI',
+                      style: GoogleFonts.poppins(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                TextField(
+                  controller: ipController,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    labelText: 'Sunucu IP Adresi',
+                    labelStyle: const TextStyle(color: Colors.white54),
+                    prefixIcon: const Icon(Icons.wifi, color: Colors.white54),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: const BorderSide(color: Colors.cyanAccent),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.cyanAccent.withOpacity(0.2),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        side: const BorderSide(color: Colors.cyanAccent),
+                      ),
+                    ),
+                    onPressed: () async {
+                      final prefs = await SharedPreferences.getInstance();
+
+                      String yeniIp = ipController.text.trim();
+
+                      await prefs.setString('sunucu_ip', yeniIp);
+
+                      setState(() {
+                        sunucuIp = yeniIp;
+                      });
+
+                      Navigator.pop(context);
+
+                      veriGetir();
+                    },
+                    child: Text(
+                      'KAYDET',
+                      style: GoogleFonts.poppins(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.cyanAccent,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Widget _buildGlassCard({required Widget child, double? height}) {
@@ -638,12 +836,26 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const SizedBox(width: 48),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.05),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.1),
+                          ),
+                        ),
+                        child: IconButton(
+                          icon: const Icon(Icons.settings, size: 22),
+                          color: Colors.white70,
+                          tooltip: 'Ayarlar',
+                          onPressed: _ayarlariGoster,
+                        ),
+                      ),
                       Text(
                         'IoT Cold Chain',
                         textAlign: TextAlign.center,
                         style: GoogleFonts.poppins(
-                          fontSize: 22,
+                          fontSize: 20,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 2,
                           color: Colors.white70,
