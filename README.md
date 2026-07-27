@@ -1,18 +1,26 @@
-# 🌡️ IoT Cold Chain (Soğuk Zincir) Takip Sistemi
+🌡️ IoT Cold Chain Tracking System
 
-Bu proje, bir donanım (ESP32) üzerinden alınan sıcaklık verilerinin güvenli bir şekilde veri tabanına işlenmesini ve mobil uygulama üzerinden anlık olarak takip edilmesini sağlayan uçtan uca bir IoT ekosistemidir.
+This project is an end-to-end IoT ecosystem that ensures temperature data obtained from hardware (ESP32) is securely processed into a database and monitored in real-time via a mobile application.
+🚀 Technologies Used
 
-## 🚀 Kullanılan Teknolojiler
-* **Veri Tabanı:** MS SQL Server (Docker Container mimarisi ile izole edilmiştir)
-* **Backend (API):** FastAPI (Python)
-* **Veri Simülasyonu:** Python (Gerçek donanım entegrasyonu öncesi test için)
-* **Mobil Uygulama:** Flutter (Geliştirme aşamasında)
-* **Donanım:** ESP32 (Geliştirme aşamasında)
+    Database: MS SQL Server (Isolated using Docker Container architecture)
 
-## ⚙️ Projenin Mimarisi
-1. Python simülasyonu (veya ESP32) sensör verilerini üretir/okur.
-2. Kuralları ihlal eden sıcaklıklar (örneğin > 8°C) anomali olarak veri tabanına kaydedilir.
-3. FastAPI, veri tabanı ile mobil uygulama arasında güvenli bir köprü kurarak verileri JSON formatında sunar.
+    Backend (API): FastAPI (Python)
 
-## 🔒 Güvenlik
-Bu projede veri tabanı şifreleri ve hassas bilgiler `.env` dosyası içinde tutulmakta olup, `.gitignore` kullanılarak gizliliği sağlanmıştır.
+    Data Simulation: Python (For testing prior to real hardware integration)
+
+    Mobile Application: Flutter (In development)
+
+    Hardware: ESP32 (In development)
+
+⚙️ Project Architecture
+
+    Python simulation (or ESP32) generates/reads sensor data.
+
+    Temperatures that violate the rules (e.g., > 8°C) are logged into the database as anomalies.
+
+    FastAPI establishes a secure bridge between the database and the mobile application, serving data in JSON format.
+
+🔒 Security
+
+In this project, database passwords and sensitive information are kept within a .env file, and their privacy is ensured by utilizing .gitignore.

@@ -4,72 +4,80 @@ import time
 import os
 from dotenv import load_dotenv
 
-# .env dosyasındaki şifreleri sisteme yükle
+# Load environment variables from the .env file
 load_dotenv()
 
-# 1. Veri Tabanı Bağlantı Ayarları
-sunucu = 'localhost'
-port = '1434'  # Seninle özel olarak ayarladığımız kapı numarası
-kullanici = 'sa'
-sifre = os.getenv('DB_PASSWORD')
-veritabani = 'IoT_ColdChain'
+# 1. Database Connection Settings
+server = 'localhost'
+port = '1434'  # Custom port number we specifically configured
+user = 'sa'
+password = os.getenv('DB_PASSWORD')
+database = 'IoT_ColdChain'
 
 try:
-    print("Veri tabanına bağlanılıyor...")
-    # SQL Server'a sızıyoruz
-    conn = pymssql.connect(server=sunucu, port=port, user=kullanici, password=sifre, database=veritabani)
+    print("Connecting to the database...")
+    # Connecting to SQL Server
+    conn = pymssql.connect(server=server, port=port, user=user, password=password, database=database)
     cursor = conn.cursor()
-    print("Bağlantı başarılı! Simülasyon başlatılıyor...\n")
+    print("Connection successful! Starting simulation...\n")
     print("-" * 50)
 
-    # 2. Sisteme Sanal Bir Sensör Ekleyelim (Daha önce eklenmemişse)
+    # 2. Add a Virtual Sensor to the System (if not already added)
     cursor.execute("SELECT COUNT(*) FROM Sensors")
-    kayit_sayisi = cursor.fetchone()[0]
+    record_count = cursor.fetchone()[0]
     
-    if kayit_sayisi == 0:
-        print("Sistemde sensör bulunamadı. Yeni sanal sensör sicili oluşturuluyor...")
+    if record_count == 0:
+        print("No sensor found in the system. Creating a new virtual sensor record...")
         cursor.execute("""
             INSERT INTO Sensors (SensorName, Location, AlertThreshold) 
             VALUES ('ESP32_Sanal_Sensor', 'Ankara_Merkez_Depo', 8.00)
         """)
         conn.commit()
 
-    # Eklediğimiz sensörün kimlik numarasını (ID) ve sınır değerini SQL'den çekelim
+    # Fetch the ID and threshold value of the sensor from SQL
     cursor.execute("SELECT TOP 1 SensorID, AlertThreshold FROM Sensors")
-    sensor_bilgisi = cursor.fetchone()
-    sensor_id = sensor_bilgisi[0]
-    esik_deger = float(sensor_bilgisi[1])
+    sensor_info = cursor.fetchone()
+    sensor_id = sensor_info[0]
+    threshold_value = float(sensor_info[1])
 
-    # 3. Veri Pompalamaya (ETL) Başlıyoruz
+    # 3. Start Data Pumping (ETL Process)
     while True:
-        # 2.00 ile 15.00 derece arasında rastgele bir sıcaklık üretelim
-        sicaklik = round(random.uniform(2.0, 15.0), 2)
+        # Generate temperature using Gaussian (Normal) distribution
+        # Mean (mu) = 4.0°C, Standard Deviation (sigma) = 2.0
+        # This ensures most data stays around 4°C, while extreme values (>8.00) occur rarely.
+        temperature = round(random.gauss(4.0, 2.0), 2)
         
-        # A. Sıcaklık verisini Ana Tabloya yaz
-        cursor.execute(f"INSERT INTO TemperatureLogs (SensorID, Temperature) VALUES ({sensor_id}, {sicaklik})")
+        # A. Insert temperature data securely and capture the inserted LogID instantly (Prevents Race Condition)
+        cursor.execute("""
+            INSERT INTO TemperatureLogs (SensorID, Temperature) 
+            OUTPUT inserted.LogID 
+            VALUES (%s, %s)
+        """, (sensor_id, temperature))
+        
+        # Fetch the exact LogID of the row we just inserted
+        last_log_id = cursor.fetchone()[0]
         conn.commit()
 
-        # B. Kural Kontrolü: Sıcaklık eşiği aştı mı?
-        if sicaklik > esik_deger:
-            print(f"🔴 ALARM! Sıcaklık {sicaklik}°C. Eşik değer ({esik_deger}) aşıldı!")
+        # B. Rule Check: Did the temperature exceed the threshold?
+        if temperature > threshold_value:
+            print(f"🔴 ALARM! Temperature {temperature}°C. Threshold ({threshold_value}) exceeded!")
             
-            # Son eklenen verinin numarasını bul
-            cursor.execute("SELECT MAX(LogID) FROM TemperatureLogs")
-            son_log_id = cursor.fetchone()[0]
-            
-            # Anomali tablosuna bu kural ihlalini kaydet
-            hata_mesaji = f"Sıcaklık {sicaklik} dereceye ulasti."
-            cursor.execute(f"INSERT INTO Anomalies (LogID, Description) VALUES ({son_log_id}, '{hata_mesaji}')")
+            # Save this rule violation to the Anomalies table securely
+            error_message = f"Temperature reached {temperature} degrees."
+            cursor.execute("""
+                INSERT INTO Anomalies (LogID, Description) 
+                VALUES (%s, %s)
+            """, (last_log_id, error_message))
             conn.commit()
         else:
-            print(f"🟢 Normal. Sıcaklık: {sicaklik}°C")
+            print(f"🟢 Normal. Temperature: {temperature}°C")
 
-        # 3 saniye bekle ve döngüyü tekrarla
+        # Wait for 3 seconds and repeat the loop
         time.sleep(3)
 
 except Exception as e:
-    print(f"Kritik bir hata oluştu: {e}")
+    print(f"A critical error occurred: {e}")
 finally:
-    # Program durdurulursa kapıyı güvenli bir şekilde kapat
+    # Safely close the connection if the program stops
     if 'conn' in locals():
         conn.close()

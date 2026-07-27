@@ -11,15 +11,14 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ==========================================
-// YENİ VE TEMİZ BİLDİRİM TETİKLEYİCİSİ
+// NEW AND CLEAN NOTIFICATION TRIGGER
 // ==========================================
 @pragma('vm:entry-point')
 void notificationTapBackground(NotificationResponse response) {
   WidgetsFlutterBinding.ensureInitialized();
   DartPluginRegistrant.ensureInitialized();
 
-  if (response.actionId == 'alarm_durdur' ||
-      response.payload == 'alarm_durdur') {
+  if (response.actionId == 'stop_alarm' || response.payload == 'stop_alarm') {
     FlutterBackgroundService().invoke('stopAlarmSound');
   }
 }
@@ -28,9 +27,9 @@ Future<void> initializeService() async {
   final service = FlutterBackgroundService();
 
   const AndroidNotificationChannel channel = AndroidNotificationChannel(
-    'iot_arkaplan_kanali',
-    'IoT Cold Chain Arka Plan Servisi',
-    description: 'Uygulama kapalıyken sıcaklık takibi yapar',
+    'iot_background_channel',
+    'IoT Cold Chain Background Service',
+    description: 'Tracks temperature while the app is closed',
     importance: Importance.low,
   );
 
@@ -48,9 +47,9 @@ Future<void> initializeService() async {
       onStart: onStart,
       autoStart: true,
       isForegroundMode: true,
-      notificationChannelId: 'iot_arkaplan_kanali',
-      initialNotificationTitle: 'IoT Cold Chain Aktif',
-      initialNotificationContent: 'Arka planda sıcaklık izleniyor...',
+      notificationChannelId: 'iot_background_channel',
+      initialNotificationTitle: 'IoT Cold Chain Active',
+      initialNotificationContent: 'Monitoring temperature in background...',
       foregroundServiceNotificationId: 888,
     ),
     iosConfiguration: IosConfiguration(autoStart: true, onForeground: onStart),
@@ -61,7 +60,23 @@ Future<void> initializeService() async {
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
 
-  final AudioPlayer alarmPlayer = AudioPlayer(playerId: 'iot_acil_alarm');
+  final AudioPlayer alarmPlayer = AudioPlayer(playerId: 'iot_emergency_alarm');
+
+  // STATE VARIABLES MUST BE DECLARED BEFORE LISTENERS
+  String lastLogDate = '';
+  int sameDataCounter = 0;
+
+  bool notifiedTemperature = false;
+  bool notifiedServer = false;
+  bool notifiedSensor = false;
+
+  DateTime? temperatureErrorTime;
+  DateTime? sensorErrorTime;
+  DateTime? serverErrorTime;
+
+  bool alarmPlayedTemperature = false;
+  bool alarmPlayedSensor = false;
+  bool alarmPlayedServer = false;
 
   service.on('stopService').listen((event) async {
     await alarmPlayer.stop();
@@ -70,96 +85,98 @@ void onStart(ServiceInstance service) async {
 
   service.on('stopAlarmSound').listen((event) async {
     await alarmPlayer.stop();
-    final bgBildirim = FlutterLocalNotificationsPlugin();
-    bgBildirim.cancel(id: 11);
-    bgBildirim.cancel(id: 12);
-    bgBildirim.cancel(id: 13);
+    final bgNotification = FlutterLocalNotificationsPlugin();
+    bgNotification.cancel(id: 11);
+    bgNotification.cancel(id: 12);
+    bgNotification.cancel(id: 13);
+
+    // RESET COUNTERS AND FLAGS
+    if (alarmPlayedSensor) sensorErrorTime = DateTime.now();
+    if (alarmPlayedTemperature) temperatureErrorTime = DateTime.now();
+    if (alarmPlayedServer) serverErrorTime = DateTime.now();
+
+    alarmPlayedSensor = false;
+    alarmPlayedTemperature = false;
+    alarmPlayedServer = false;
   });
 
-  final FlutterLocalNotificationsPlugin bgBildirim =
+  final FlutterLocalNotificationsPlugin bgNotification =
       FlutterLocalNotificationsPlugin();
 
-  bgBildirim.initialize(
+  bgNotification.initialize(
     settings: const InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     ),
     onDidReceiveNotificationResponse: (NotificationResponse response) async {
-      if (response.actionId == 'alarm_durdur' ||
-          response.payload == 'alarm_durdur') {
+      if (response.actionId == 'stop_alarm' ||
+          response.payload == 'stop_alarm') {
         await alarmPlayer.stop();
-        bgBildirim.cancel(id: 11);
-        bgBildirim.cancel(id: 12);
-        bgBildirim.cancel(id: 13);
+        bgNotification.cancel(id: 11);
+        bgNotification.cancel(id: 12);
+        bgNotification.cancel(id: 13);
+
+        // RESET COUNTERS AND FLAGS
+        if (alarmPlayedSensor) sensorErrorTime = DateTime.now();
+        if (alarmPlayedTemperature) temperatureErrorTime = DateTime.now();
+        if (alarmPlayedServer) serverErrorTime = DateTime.now();
+
+        alarmPlayedSensor = false;
+        alarmPlayedTemperature = false;
+        alarmPlayedServer = false;
       }
     },
     onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
   );
 
-  String sonLogTarihi = '';
-  int ayniVeriSayaci = 0;
-
-  bool bildirimGonderildiSicaklik = false;
-  bool bildirimGonderildiSunucu = false;
-  bool bildirimGonderildiSensor = false;
-
-  DateTime? sicaklikHataZamani;
-  DateTime? sensorHataZamani;
-  DateTime? sunucuHataZamani;
-
-  bool alarmCaldiSicaklik = false;
-  bool alarmCaldiSensor = false;
-  bool alarmCaldiSunucu = false;
-
   Timer.periodic(const Duration(seconds: 3), (timer) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final String dinamikIp = prefs.getString('sunucu_ip') ?? '192.168.1.11';
+      final String dynamicIp = prefs.getString('server_ip') ?? '192.168.1.11';
 
       final response = await http
-          .get(Uri.parse('http://$dinamikIp:8000/son-durum'))
+          .get(Uri.parse('http://$dynamicIp:8000/latest-status'))
           .timeout(const Duration(seconds: 3));
 
       if (response.statusCode == 200) {
-        if (alarmCaldiSunucu) await alarmPlayer.stop();
-        sunucuHataZamani = null;
-        alarmCaldiSunucu = false;
-        bildirimGonderildiSunucu = false;
+        if (alarmPlayedServer) await alarmPlayer.stop();
+        serverErrorTime = null;
+        alarmPlayedServer = false;
+        notifiedServer = false;
 
         final data = json.decode(response.body);
 
         if (data != null && data['Temperature'] != null) {
-          double anlikSicaklik = data['Temperature'];
-          String gelenTarih = data['LogDate'];
+          double currentTemperature = data['Temperature'];
+          String receivedDate = data['LogDate'];
 
-          if (gelenTarih == sonLogTarihi) {
-            ayniVeriSayaci++;
-            if (ayniVeriSayaci >= 3) {
-              sensorHataZamani ??= DateTime.now();
+          if (receivedDate == lastLogDate) {
+            sameDataCounter++;
+            if (sameDataCounter >= 3) {
+              sensorErrorTime ??= DateTime.now();
 
               if (service is AndroidServiceInstance) {
                 service.setForegroundNotificationInfo(
-                  title: 'IoT Cold Chain (Sensör Koptu)',
-                  content: 'Donanımdan veri alınamıyor!',
+                  title: 'IoT Cold Chain (Sensor Disconnected)',
+                  content: 'No data received from hardware!',
                 );
               }
 
-              if (DateTime.now().difference(sensorHataZamani!).inSeconds >=
-                  60) {
-                if (!alarmCaldiSensor) {
+              if (DateTime.now().difference(sensorErrorTime!).inSeconds >= 60) {
+                if (!alarmPlayedSensor) {
                   await alarmPlayer.setReleaseMode(ReleaseMode.loop);
                   await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
 
-                  bgBildirim.show(
+                  bgNotification.show(
                     id: 11,
-                    title: '🚨 ALARM: SENSÖR KOPTU!',
-                    body: 'TAM 1 DAKİKADIR DONANIMDAN VERİ ALINAMIYOR!',
-                    payload: 'alarm_durdur',
+                    title: '🚨 ALARM: SENSOR DISCONNECTED!',
+                    body: 'NO DATA FROM HARDWARE FOR 1 MINUTE!',
+                    payload: 'stop_alarm',
                     notificationDetails: const NotificationDetails(
                       android: AndroidNotificationDetails(
-                        'sessiz_gorsel_alarm',
-                        'Görsel Alarm Sistemi',
+                        'silent_visual_alarm',
+                        'Visual Alarm System',
                         channelDescription:
-                            'Sesi oynatıcı tarafından yönetilen alarmlar',
+                            'Alarms managed by the audio player',
                         importance: Importance.max,
                         priority: Priority.high,
                         color: Colors.red,
@@ -168,8 +185,8 @@ void onStart(ServiceInstance service) async {
                         fullScreenIntent: true,
                         actions: <AndroidNotificationAction>[
                           AndroidNotificationAction(
-                            'alarm_durdur',
-                            'ALARMI KAPAT',
+                            'stop_alarm',
+                            'STOP ALARM',
                             showsUserInterface: false,
                             cancelNotification: true,
                           ),
@@ -177,63 +194,63 @@ void onStart(ServiceInstance service) async {
                       ),
                     ),
                   );
-                  alarmCaldiSensor = true;
+                  alarmPlayedSensor = true;
                 }
-              } else if (!bildirimGonderildiSensor && !alarmCaldiSensor) {
-                bgBildirim.show(
+              } else if (!notifiedSensor && !alarmPlayedSensor) {
+                bgNotification.show(
                   id: 1,
-                  title: '📡 Sensör Bağlantısı Koptu',
-                  body: 'Donanımdan veri gelmiyor, durum izleniyor...',
+                  title: '📡 Sensor Connection Lost',
+                  body: 'No data from hardware, monitoring status...',
                   notificationDetails: const NotificationDetails(
                     android: AndroidNotificationDetails(
-                      'iot_kanali',
-                      'Sistem Uyarıları',
-                      channelDescription: 'Sistem Uyarıları',
+                      'iot_channel',
+                      'System Alerts',
+                      channelDescription: 'System Alerts',
                       importance: Importance.max,
                       priority: Priority.high,
                     ),
                   ),
                 );
-                bildirimGonderildiSensor = true;
+                notifiedSensor = true;
               }
             }
           } else {
-            if (alarmCaldiSensor) await alarmPlayer.stop();
-            sonLogTarihi = gelenTarih;
-            ayniVeriSayaci = 0;
-            bildirimGonderildiSensor = false;
-            sensorHataZamani = null;
-            alarmCaldiSensor = false;
+            if (alarmPlayedSensor) await alarmPlayer.stop();
+            lastLogDate = receivedDate;
+            sameDataCounter = 0;
+            notifiedSensor = false;
+            sensorErrorTime = null;
+            alarmPlayedSensor = false;
 
             if (service is AndroidServiceInstance) {
               service.setForegroundNotificationInfo(
-                title: 'IoT Cold Chain Aktif',
+                title: 'IoT Cold Chain Active',
                 content:
-                    'Anlık Sıcaklık: ${anlikSicaklik.toStringAsFixed(1)}°C',
+                    'Current Temp: ${currentTemperature.toStringAsFixed(1)}°C',
               );
             }
 
-            if (anlikSicaklik > 8.0) {
-              sicaklikHataZamani ??= DateTime.now();
+            if (currentTemperature > 8.0) {
+              temperatureErrorTime ??= DateTime.now();
 
-              if (DateTime.now().difference(sicaklikHataZamani!).inSeconds >=
+              if (DateTime.now().difference(temperatureErrorTime!).inSeconds >=
                   60) {
-                if (!alarmCaldiSicaklik) {
+                if (!alarmPlayedTemperature) {
                   await alarmPlayer.setReleaseMode(ReleaseMode.loop);
                   await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
 
-                  bgBildirim.show(
+                  bgNotification.show(
                     id: 12,
-                    title: '🚨 ALARM: KRİTİK SICAKLIK!',
+                    title: '🚨 ALARM: CRITICAL TEMPERATURE!',
                     body:
-                        'SICAKLIK 1 DAKİKADIR EŞİĞİN ÜZERİNDE (${anlikSicaklik.toStringAsFixed(1)}°C)!',
-                    payload: 'alarm_durdur',
+                        'TEMPERATURE ABOVE THRESHOLD FOR 1 MINUTE (${currentTemperature.toStringAsFixed(1)}°C)!',
+                    payload: 'stop_alarm',
                     notificationDetails: const NotificationDetails(
                       android: AndroidNotificationDetails(
-                        'sessiz_gorsel_alarm',
-                        'Görsel Alarm Sistemi',
+                        'silent_visual_alarm',
+                        'Visual Alarm System',
                         channelDescription:
-                            'Sesi oynatıcı tarafından yönetilen alarmlar',
+                            'Alarms managed by the audio player',
                         importance: Importance.max,
                         priority: Priority.high,
                         color: Colors.red,
@@ -242,8 +259,8 @@ void onStart(ServiceInstance service) async {
                         fullScreenIntent: true,
                         actions: <AndroidNotificationAction>[
                           AndroidNotificationAction(
-                            'alarm_durdur',
-                            'ALARMI KAPAT',
+                            'stop_alarm',
+                            'STOP ALARM',
                             showsUserInterface: false,
                             cancelNotification: true,
                           ),
@@ -251,60 +268,60 @@ void onStart(ServiceInstance service) async {
                       ),
                     ),
                   );
-                  alarmCaldiSicaklik = true;
+                  alarmPlayedTemperature = true;
                 }
-              } else if (!bildirimGonderildiSicaklik && !alarmCaldiSicaklik) {
-                bgBildirim.show(
+              } else if (!notifiedTemperature && !alarmPlayedTemperature) {
+                bgNotification.show(
                   id: 2,
-                  title: '⚠️ Sıcaklık Uyarısı',
-                  body: 'Sıcaklık ${anlikSicaklik.toStringAsFixed(1)}°C oldu.',
+                  title: '⚠️ Temperature Warning',
+                  body:
+                      'Temperature reached ${currentTemperature.toStringAsFixed(1)}°C.',
                   notificationDetails: const NotificationDetails(
                     android: AndroidNotificationDetails(
-                      'iot_kanali',
-                      'Sistem Uyarıları',
-                      channelDescription: 'Sistem Uyarıları',
+                      'iot_channel',
+                      'System Alerts',
+                      channelDescription: 'System Alerts',
                       importance: Importance.max,
                       priority: Priority.high,
                       color: Colors.orange,
                     ),
                   ),
                 );
-                bildirimGonderildiSicaklik = true;
+                notifiedTemperature = true;
               }
             } else {
-              if (alarmCaldiSicaklik) await alarmPlayer.stop();
-              bildirimGonderildiSicaklik = false;
-              sicaklikHataZamani = null;
-              alarmCaldiSicaklik = false;
+              if (alarmPlayedTemperature) await alarmPlayer.stop();
+              notifiedTemperature = false;
+              temperatureErrorTime = null;
+              alarmPlayedTemperature = false;
             }
           }
         }
       } else {
-        sunucuHataZamani ??= DateTime.now();
+        serverErrorTime ??= DateTime.now();
 
         if (service is AndroidServiceInstance) {
           service.setForegroundNotificationInfo(
-            title: 'IoT Cold Chain (Sunucu Hatası)',
-            content: 'Merkezi sunucu cevap vermiyor.',
+            title: 'IoT Cold Chain (Server Error)',
+            content: 'Central server is not responding.',
           );
         }
 
-        if (DateTime.now().difference(sunucuHataZamani!).inSeconds >= 60) {
-          if (!alarmCaldiSunucu) {
+        if (DateTime.now().difference(serverErrorTime!).inSeconds >= 60) {
+          if (!alarmPlayedServer) {
             await alarmPlayer.setReleaseMode(ReleaseMode.loop);
             await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
 
-            bgBildirim.show(
+            bgNotification.show(
               id: 13,
-              title: '🚨 ALARM: SUNUCU ÇÖKTÜ!',
-              body: 'TAM 1 DAKİKADIR SUNUCUDAN YANIT ALINAMIYOR!',
-              payload: 'alarm_durdur',
+              title: '🚨 ALARM: SERVER CRASHED!',
+              body: 'NO RESPONSE FROM SERVER FOR 1 MINUTE!',
+              payload: 'stop_alarm',
               notificationDetails: const NotificationDetails(
                 android: AndroidNotificationDetails(
-                  'sessiz_gorsel_alarm',
-                  'Görsel Alarm Sistemi',
-                  channelDescription:
-                      'Sesi oynatıcı tarafından yönetilen alarmlar',
+                  'silent_visual_alarm',
+                  'Visual Alarm System',
+                  channelDescription: 'Alarms managed by the audio player',
                   importance: Importance.max,
                   priority: Priority.high,
                   color: Colors.red,
@@ -313,8 +330,8 @@ void onStart(ServiceInstance service) async {
                   fullScreenIntent: true,
                   actions: <AndroidNotificationAction>[
                     AndroidNotificationAction(
-                      'alarm_durdur',
-                      'ALARMI KAPAT',
+                      'stop_alarm',
+                      'STOP ALARM',
                       showsUserInterface: false,
                       cancelNotification: true,
                     ),
@@ -322,52 +339,51 @@ void onStart(ServiceInstance service) async {
                 ),
               ),
             );
-            alarmCaldiSunucu = true;
+            alarmPlayedServer = true;
           }
-        } else if (!bildirimGonderildiSunucu && !alarmCaldiSunucu) {
-          bgBildirim.show(
+        } else if (!notifiedServer && !alarmPlayedServer) {
+          bgNotification.show(
             id: 3,
-            title: '🔌 Sunucu Hatası',
-            body: 'Merkezi sunucu cevap vermiyor.',
+            title: '🔌 Server Error',
+            body: 'Central server is not responding.',
             notificationDetails: const NotificationDetails(
               android: AndroidNotificationDetails(
-                'iot_kanali',
-                'Sistem Uyarıları',
-                channelDescription: 'Sistem Uyarıları',
+                'iot_channel',
+                'System Alerts',
+                channelDescription: 'System Alerts',
                 importance: Importance.max,
                 priority: Priority.high,
               ),
             ),
           );
-          bildirimGonderildiSunucu = true;
+          notifiedServer = true;
         }
       }
     } catch (e) {
-      sunucuHataZamani ??= DateTime.now();
+      serverErrorTime ??= DateTime.now();
 
       if (service is AndroidServiceInstance) {
         service.setForegroundNotificationInfo(
-          title: 'IoT Cold Chain (Bağlantı Yok)',
-          content: 'Sunucuya ulaşılamıyor.',
+          title: 'IoT Cold Chain (No Connection)',
+          content: 'Server unreachable.',
         );
       }
 
-      if (DateTime.now().difference(sunucuHataZamani!).inSeconds >= 60) {
-        if (!alarmCaldiSunucu) {
+      if (DateTime.now().difference(serverErrorTime!).inSeconds >= 60) {
+        if (!alarmPlayedServer) {
           await alarmPlayer.setReleaseMode(ReleaseMode.loop);
           await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
 
-          bgBildirim.show(
+          bgNotification.show(
             id: 13,
-            title: '🚨 ALARM: BAĞLANTI KOPTU!',
-            body: 'TAM 1 DAKİKADIR SİSTEME ULAŞILAMIYOR!',
-            payload: 'alarm_durdur',
+            title: '🚨 ALARM: CONNECTION LOST!',
+            body: 'CANNOT REACH SYSTEM FOR 1 MINUTE!',
+            payload: 'stop_alarm',
             notificationDetails: const NotificationDetails(
               android: AndroidNotificationDetails(
-                'sessiz_gorsel_alarm',
-                'Görsel Alarm Sistemi',
-                channelDescription:
-                    'Sesi oynatıcı tarafından yönetilen alarmlar',
+                'silent_visual_alarm',
+                'Visual Alarm System',
+                channelDescription: 'Alarms managed by the audio player',
                 importance: Importance.max,
                 priority: Priority.high,
                 color: Colors.red,
@@ -376,8 +392,8 @@ void onStart(ServiceInstance service) async {
                 fullScreenIntent: true,
                 actions: <AndroidNotificationAction>[
                   AndroidNotificationAction(
-                    'alarm_durdur',
-                    'ALARMI KAPAT',
+                    'stop_alarm',
+                    'STOP ALARM',
                     showsUserInterface: false,
                     cancelNotification: true,
                   ),
@@ -385,24 +401,24 @@ void onStart(ServiceInstance service) async {
               ),
             ),
           );
-          alarmCaldiSunucu = true;
+          alarmPlayedServer = true;
         }
-      } else if (!bildirimGonderildiSunucu && !alarmCaldiSunucu) {
-        bgBildirim.show(
+      } else if (!notifiedServer && !alarmPlayedServer) {
+        bgNotification.show(
           id: 3,
-          title: '🔌 Sunucu Bağlantısı Koptu',
-          body: 'FastAPI sunucusuna ulaşılamıyor.',
+          title: '🔌 Server Connection Lost',
+          body: 'FastAPI server is unreachable.',
           notificationDetails: const NotificationDetails(
             android: AndroidNotificationDetails(
-              'iot_kanali',
-              'Sistem Uyarıları',
-              channelDescription: 'Sistem Uyarıları',
+              'iot_channel',
+              'System Alerts',
+              channelDescription: 'System Alerts',
               importance: Importance.max,
               priority: Priority.high,
             ),
           ),
         );
-        bildirimGonderildiSunucu = true;
+        notifiedServer = true;
       }
     }
   });
@@ -426,68 +442,68 @@ class IoTApp extends StatelessWidget {
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF0A0E21),
       ),
-      home: const AnaEkran(),
+      home: const MainScreen(),
     );
   }
 }
 
-enum BaglantiDurumu { baglaniliyor, aktif, sensorBekleniyor, sunucuHatasi }
+enum ConnectionStateEnum { connecting, active, waitingForSensor, serverError }
 
-class AnaEkran extends StatefulWidget {
-  const AnaEkran({super.key});
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
   @override
-  State<AnaEkran> createState() => _AnaEkranState();
+  State<MainScreen> createState() => _MainScreenState();
 }
 
-class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
-  String sonLogTarihi = '';
-  int ayniVeriSayaci = 0;
-  BaglantiDurumu durum = BaglantiDurumu.baglaniliyor;
-  bool esikAsildi = false;
-  double anlikSicaklik = 0.0;
-  final double ESIK_DEGER = 8.0;
-  List<FlSpot> grafikVerileri = [];
+class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
+  String lastLogDate = '';
+  int sameDataCounter = 0;
+  ConnectionStateEnum status = ConnectionStateEnum.connecting;
+  bool thresholdExceeded = false;
+  double currentTemperature = 0.0;
+  final double THRESHOLD_VALUE = 8.0;
+  List<FlSpot> chartData = [];
   Timer? timer;
 
-  final FlutterLocalNotificationsPlugin _bildirimEklentisi =
+  final FlutterLocalNotificationsPlugin _notificationPlugin =
       FlutterLocalNotificationsPlugin();
 
-  bool bildirimGonderildiSicaklik = false;
-  bool bildirimGonderildiSunucu = false;
-  bool bildirimGonderildiSensor = false;
+  bool notifiedTemperature = false;
+  bool notifiedServer = false;
+  bool notifiedSensor = false;
 
-  bool arkaPlanAktif = true;
+  bool isBackgroundActive = true;
 
-  String sunucuIp = '192.168.1.11';
+  String serverIp = '192.168.1.11';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    _ayarlariYukle();
-    _arkaPlanDurumunuKontrolEt();
-    bildirimSisteminiBaslat();
+    _loadSettings();
+    _checkBackgroundStatus();
+    initializeNotificationSystem();
 
-    veriGetir();
+    fetchData();
     timer = Timer.periodic(
       const Duration(seconds: 3),
-      (Timer t) => veriGetir(),
+      (Timer t) => fetchData(),
     );
   }
 
-  Future<void> _ayarlariYukle() async {
+  Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      sunucuIp = prefs.getString('sunucu_ip') ?? '192.168.1.11';
+      serverIp = prefs.getString('server_ip') ?? '192.168.1.11';
     });
   }
 
-  Future<void> _arkaPlanDurumunuKontrolEt() async {
+  Future<void> _checkBackgroundStatus() async {
     final service = FlutterBackgroundService();
-    bool calisiyorMu = await service.isRunning();
+    bool isRunning = await service.isRunning();
     setState(() {
-      arkaPlanAktif = calisiyorMu;
+      isBackgroundActive = isRunning;
     });
   }
 
@@ -505,18 +521,18 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> bildirimSisteminiBaslat() async {
-    const AndroidInitializationSettings androidAyarlari =
+  Future<void> initializeNotificationSystem() async {
+    const AndroidInitializationSettings androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
-    const InitializationSettings kurulumAyarlari = InitializationSettings(
-      android: androidAyarlari,
+    const InitializationSettings initSettings = InitializationSettings(
+      android: androidSettings,
     );
 
-    await _bildirimEklentisi.initialize(
-      settings: kurulumAyarlari,
+    await _notificationPlugin.initialize(
+      settings: initSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) {
-        if (response.actionId == 'alarm_durdur' ||
-            response.payload == 'alarm_durdur') {
+        if (response.actionId == 'stop_alarm' ||
+            response.payload == 'stop_alarm') {
           FlutterBackgroundService().invoke('stopAlarmSound');
         }
       },
@@ -524,7 +540,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
     );
 
     final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
-        _bildirimEklentisi
+        _notificationPlugin
             .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin
             >();
@@ -533,119 +549,123 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> bildirimGonder(int id, String baslik, String icerik) async {
-    const AndroidNotificationDetails androidDetay = AndroidNotificationDetails(
-      'iot_kanali',
-      'Sistem Uyarıları',
+  Future<void> sendNotification(int id, String title, String body) async {
+    const AndroidNotificationDetails androidDetail = AndroidNotificationDetails(
+      'iot_channel',
+      'System Alerts',
       importance: Importance.max,
       priority: Priority.high,
       enableVibration: true,
       color: Colors.red,
     );
-    await _bildirimEklentisi.show(
+    await _notificationPlugin.show(
       id: id,
-      title: baslik,
-      body: icerik,
-      notificationDetails: const NotificationDetails(android: androidDetay),
+      title: title,
+      body: body,
+      notificationDetails: const NotificationDetails(android: androidDetail),
     );
   }
 
-  Future<void> veriGetir() async {
+  Future<void> fetchData() async {
     try {
-      final responseDurum = await http
-          .get(Uri.parse('http://$sunucuIp:8000/son-durum'))
+      final responseStatus = await http
+          .get(Uri.parse('http://$serverIp:8000/latest-status'))
           .timeout(const Duration(seconds: 3));
 
-      if (responseDurum.statusCode == 200) {
-        final data = json.decode(responseDurum.body);
+      if (responseStatus.statusCode == 200) {
+        final data = json.decode(responseStatus.body);
         if (data != null && data['Temperature'] != null) {
           setState(() {
-            double hamSicaklik = data['Temperature'];
-            String gelenTarih = data['LogDate'];
+            double rawTemp = data['Temperature'];
+            String receivedDate = data['LogDate'];
 
-            if (gelenTarih == sonLogTarihi) {
-              ayniVeriSayaci++;
-              if (ayniVeriSayaci >= 5) {
-                durum = BaglantiDurumu.sensorBekleniyor;
-                esikAsildi = false;
-                if (!bildirimGonderildiSensor) {
-                  bildirimGonder(
+            if (receivedDate == lastLogDate) {
+              sameDataCounter++;
+              if (sameDataCounter >= 5) {
+                status = ConnectionStateEnum.waitingForSensor;
+                thresholdExceeded = false;
+                if (!notifiedSensor) {
+                  sendNotification(
                     1,
-                    '📡 SENSÖR BAĞLANTISI KOPTU',
-                    'Donanımdan veri gelmiyor!',
+                    '📡 SENSOR CONNECTION LOST',
+                    'No data from hardware!',
                   );
-                  bildirimGonderildiSensor = true;
+                  notifiedSensor = true;
                 }
               }
             } else {
-              sonLogTarihi = gelenTarih;
-              ayniVeriSayaci = 0;
-              durum = BaglantiDurumu.aktif;
-              anlikSicaklik = hamSicaklik;
-              esikAsildi = anlikSicaklik > ESIK_DEGER;
+              lastLogDate = receivedDate;
+              sameDataCounter = 0;
+              status = ConnectionStateEnum.active;
+              currentTemperature = rawTemp;
+              thresholdExceeded = currentTemperature > THRESHOLD_VALUE;
 
-              bildirimGonderildiSunucu = false;
-              bildirimGonderildiSensor = false;
+              notifiedServer = false;
+              notifiedSensor = false;
 
-              if (esikAsildi) {
-                if (!bildirimGonderildiSicaklik) {
-                  bildirimGonder(
+              if (thresholdExceeded) {
+                if (!notifiedTemperature) {
+                  sendNotification(
                     2,
-                    '⚠️ KRİTİK SICAKLIK UYARISI',
-                    'Sıcaklık ${anlikSicaklik.toStringAsFixed(1)}°C seviyesine ulaştı!',
+                    '⚠️ CRITICAL TEMPERATURE WARNING',
+                    'Temperature reached ${currentTemperature.toStringAsFixed(1)}°C!',
                   );
-                  bildirimGonderildiSicaklik = true;
+                  notifiedTemperature = true;
                 }
               } else {
-                bildirimGonderildiSicaklik = false;
+                notifiedTemperature = false;
               }
             }
           });
         }
       } else {
         setState(() {
-          durum = BaglantiDurumu.sunucuHatasi;
-          if (!bildirimGonderildiSunucu) {
-            bildirimGonder(3, '🔌 SUNUCU HATASI', 'Sunucu cevap vermiyor.');
-            bildirimGonderildiSunucu = true;
+          status = ConnectionStateEnum.serverError;
+          if (!notifiedServer) {
+            sendNotification(3, '🔌 SERVER ERROR', 'Server not responding.');
+            notifiedServer = true;
           }
         });
       }
 
-      if (durum != BaglantiDurumu.sunucuHatasi) {
-        final responseGecmis = await http
-            .get(Uri.parse('http://$sunucuIp:8000/gecmis-veriler'))
+      if (status != ConnectionStateEnum.serverError) {
+        final responseHistory = await http
+            .get(Uri.parse('http://$serverIp:8000/historical-data'))
             .timeout(const Duration(seconds: 3));
-        if (responseGecmis.statusCode == 200) {
-          final List<dynamic> gecmisData = json.decode(responseGecmis.body);
-          final son50Veri = gecmisData.length > 50
-              ? gecmisData.sublist(gecmisData.length - 50)
-              : gecmisData;
-          List<FlSpot> noktalar = [];
-          for (int i = 0; i < son50Veri.length; i++) {
-            noktalar.add(
-              FlSpot(i.toDouble(), son50Veri[i]['Temperature'].toDouble()),
+        if (responseHistory.statusCode == 200) {
+          final List<dynamic> historyData = json.decode(responseHistory.body);
+          final last50Data = historyData.length > 50
+              ? historyData.sublist(historyData.length - 50)
+              : historyData;
+          List<FlSpot> points = [];
+          for (int i = 0; i < last50Data.length; i++) {
+            points.add(
+              FlSpot(i.toDouble(), last50Data[i]['Temperature'].toDouble()),
             );
           }
           setState(() {
-            grafikVerileri = noktalar;
+            chartData = points;
           });
         }
       }
     } catch (e) {
       setState(() {
-        durum = BaglantiDurumu.sunucuHatasi;
-        esikAsildi = false;
-        if (!bildirimGonderildiSunucu) {
-          bildirimGonder(3, '🔌 SUNUCU BAĞLANTISI KOPTU', 'Ağa ulaşılamıyor.');
-          bildirimGonderildiSunucu = true;
+        status = ConnectionStateEnum.serverError;
+        thresholdExceeded = false;
+        if (!notifiedServer) {
+          sendNotification(
+            3,
+            '🔌 SERVER CONNECTION LOST',
+            'Network unreachable.',
+          );
+          notifiedServer = true;
         }
       });
     }
   }
 
-  Future<void> _ayarlariGoster() async {
-    TextEditingController ipController = TextEditingController(text: sunucuIp);
+  Future<void> _showSettings() async {
+    TextEditingController ipController = TextEditingController(text: serverIp);
 
     await showDialog(
       context: context,
@@ -664,7 +684,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                     const Icon(Icons.settings, color: Colors.cyanAccent),
                     const SizedBox(width: 10),
                     Text(
-                      'SİSTEM AYARLARI',
+                      'SYSTEM SETTINGS',
                       style: GoogleFonts.poppins(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
@@ -678,7 +698,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                   controller: ipController,
                   style: const TextStyle(color: Colors.white),
                   decoration: InputDecoration(
-                    labelText: 'Sunucu IP Adresi',
+                    labelText: 'Server IP Address',
                     labelStyle: const TextStyle(color: Colors.white54),
                     prefixIcon: const Icon(Icons.wifi, color: Colors.white54),
                     enabledBorder: OutlineInputBorder(
@@ -706,20 +726,20 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                     onPressed: () async {
                       final prefs = await SharedPreferences.getInstance();
 
-                      String yeniIp = ipController.text.trim();
+                      String newIp = ipController.text.trim();
 
-                      await prefs.setString('sunucu_ip', yeniIp);
+                      await prefs.setString('server_ip', newIp);
 
                       setState(() {
-                        sunucuIp = yeniIp;
+                        serverIp = newIp;
                       });
 
                       Navigator.pop(context);
 
-                      veriGetir();
+                      fetchData();
                     },
                     child: Text(
-                      'KAYDET',
+                      'SAVE',
                       style: GoogleFonts.poppins(
                         fontWeight: FontWeight.bold,
                         color: Colors.cyanAccent,
@@ -759,30 +779,30 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    Color aktifRenk;
-    String merkezYazi;
-    double yaziBoyutu;
+    Color activeColor;
+    String centerText;
+    double fontSize;
 
-    switch (durum) {
-      case BaglantiDurumu.sunucuHatasi:
-        aktifRenk = Colors.red.withOpacity(0.6);
-        merkezYazi = 'SUNUCU\nHATASI';
-        yaziBoyutu = 22;
+    switch (status) {
+      case ConnectionStateEnum.serverError:
+        activeColor = Colors.red.withOpacity(0.6);
+        centerText = 'SERVER\nERROR';
+        fontSize = 22;
         break;
-      case BaglantiDurumu.sensorBekleniyor:
-        aktifRenk = Colors.orangeAccent;
-        merkezYazi = 'VERİ\nBEKLENİYOR';
-        yaziBoyutu = 18;
+      case ConnectionStateEnum.waitingForSensor:
+        activeColor = Colors.orangeAccent;
+        centerText = 'AWAITING\nDATA';
+        fontSize = 18;
         break;
-      case BaglantiDurumu.baglaniliyor:
-        aktifRenk = Colors.grey;
-        merkezYazi = 'BAĞLANILIYOR...';
-        yaziBoyutu = 16;
+      case ConnectionStateEnum.connecting:
+        activeColor = Colors.grey;
+        centerText = 'CONNECTING...';
+        fontSize = 16;
         break;
-      case BaglantiDurumu.aktif:
-        aktifRenk = esikAsildi ? Colors.redAccent : Colors.cyanAccent;
-        merkezYazi = '${anlikSicaklik.toStringAsFixed(1)}°';
-        yaziBoyutu = 48;
+      case ConnectionStateEnum.active:
+        activeColor = thresholdExceeded ? Colors.redAccent : Colors.cyanAccent;
+        centerText = '${currentTemperature.toStringAsFixed(1)}°';
+        fontSize = 48;
         break;
     }
 
@@ -797,10 +817,10 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
               height: 200,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: aktifRenk.withOpacity(0.3),
+                color: activeColor.withOpacity(0.3),
                 boxShadow: [
                   BoxShadow(
-                    color: aktifRenk.withOpacity(0.5),
+                    color: activeColor.withOpacity(0.5),
                     blurRadius: 100,
                     spreadRadius: 50,
                   ),
@@ -847,8 +867,8 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                         child: IconButton(
                           icon: const Icon(Icons.settings, size: 22),
                           color: Colors.white70,
-                          tooltip: 'Ayarlar',
-                          onPressed: _ayarlariGoster,
+                          tooltip: 'Settings',
+                          onPressed: _showSettings,
                         ),
                       ),
                       Text(
@@ -863,40 +883,40 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                       ),
                       Container(
                         decoration: BoxDecoration(
-                          color: arkaPlanAktif
+                          color: isBackgroundActive
                               ? Colors.red.withOpacity(0.1)
                               : Colors.green.withOpacity(0.1),
                           shape: BoxShape.circle,
                           border: Border.all(
-                            color: arkaPlanAktif
+                            color: isBackgroundActive
                                 ? Colors.red.withOpacity(0.3)
                                 : Colors.green.withOpacity(0.3),
                           ),
                         ),
                         child: IconButton(
                           icon: Icon(
-                            arkaPlanAktif
+                            isBackgroundActive
                                 ? Icons.stop_rounded
                                 : Icons.play_arrow_rounded,
                             size: 24,
                           ),
-                          color: arkaPlanAktif
+                          color: isBackgroundActive
                               ? Colors.redAccent
                               : Colors.greenAccent,
-                          tooltip: arkaPlanAktif
-                              ? 'Takibi Durdur'
-                              : 'Takibi Başlat',
+                          tooltip: isBackgroundActive
+                              ? 'Stop Tracking'
+                              : 'Start Tracking',
                           onPressed: () async {
                             final service = FlutterBackgroundService();
 
-                            if (arkaPlanAktif) {
+                            if (isBackgroundActive) {
                               service.invoke('stopService');
                               setState(() {
-                                arkaPlanAktif = false;
+                                isBackgroundActive = false;
                               });
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('Arka plan takibi durduruldu.'),
+                                  content: Text('Background tracking stopped.'),
                                   backgroundColor: Colors.redAccent,
                                   duration: Duration(seconds: 2),
                                 ),
@@ -904,11 +924,11 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                             } else {
                               await service.startService();
                               setState(() {
-                                arkaPlanAktif = true;
+                                isBackgroundActive = true;
                               });
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
-                                  content: Text('Arka plan takibi başlatıldı.'),
+                                  content: Text('Background tracking started.'),
                                   backgroundColor: Colors.green,
                                   duration: Duration(seconds: 2),
                                 ),
@@ -925,7 +945,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Text(
-                          'CANLI DURUM',
+                          'LIVE STATUS',
                           style: GoogleFonts.poppins(
                             fontSize: 14,
                             color: Colors.white54,
@@ -942,9 +962,14 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                               TweenAnimationBuilder<double>(
                                 tween: Tween<double>(
                                   begin: 0,
-                                  end: (durum == BaglantiDurumu.sunucuHatasi)
+                                  end:
+                                      (status ==
+                                          ConnectionStateEnum.serverError)
                                       ? 0
-                                      : (anlikSicaklik / 30.0).clamp(0.0, 1.0),
+                                      : (currentTemperature / 30.0).clamp(
+                                          0.0,
+                                          1.0,
+                                        ),
                                 ),
                                 duration: const Duration(milliseconds: 1500),
                                 builder: (context, value, _) {
@@ -955,7 +980,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                                       0.1,
                                     ),
                                     valueColor: AlwaysStoppedAnimation<Color>(
-                                      aktifRenk,
+                                      activeColor,
                                     ),
                                     strokeCap: StrokeCap.round,
                                   );
@@ -963,17 +988,17 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                               ),
                               Center(
                                 child: Text(
-                                  merkezYazi,
+                                  centerText,
                                   textAlign: TextAlign.center,
                                   style: GoogleFonts.orbitron(
-                                    fontSize: yaziBoyutu,
+                                    fontSize: fontSize,
                                     fontWeight: FontWeight.bold,
-                                    color: aktifRenk,
+                                    color: activeColor,
                                     shadows: [
                                       Shadow(
-                                        color: aktifRenk,
+                                        color: activeColor,
                                         blurRadius:
-                                            durum == BaglantiDurumu.aktif
+                                            status == ConnectionStateEnum.active
                                             ? 20
                                             : 5,
                                       ),
@@ -985,7 +1010,8 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                           ),
                         ),
                         const SizedBox(height: 20),
-                        if (esikAsildi && durum == BaglantiDurumu.aktif)
+                        if (thresholdExceeded &&
+                            status == ConnectionStateEnum.active)
                           AnimatedContainer(
                             duration: const Duration(milliseconds: 500),
                             padding: const EdgeInsets.symmetric(
@@ -1007,7 +1033,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                                 ),
                                 const SizedBox(width: 8),
                                 Text(
-                                  'KRİTİK SICAKLIK ($ESIK_DEGER°C)',
+                                  'CRITICAL TEMPERATURE ($THRESHOLD_VALUE°C)',
                                   style: GoogleFonts.poppins(
                                     color: Colors.redAccent,
                                     fontWeight: FontWeight.bold,
@@ -1027,7 +1053,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'ISI GEÇMİŞİ (SON 50 VERİ)',
+                            'TEMP HISTORY (LAST 50)',
                             style: GoogleFonts.poppins(
                               fontSize: 14,
                               color: Colors.white54,
@@ -1036,7 +1062,7 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                           ),
                           const SizedBox(height: 20),
                           Expanded(
-                            child: grafikVerileri.isEmpty
+                            child: chartData.isEmpty
                                 ? const Center(
                                     child: CircularProgressIndicator(),
                                   )
@@ -1059,19 +1085,19 @@ class _AnaEkranState extends State<AnaEkran> with WidgetsBindingObserver {
                                       borderData: FlBorderData(show: false),
                                       lineBarsData: [
                                         LineChartBarData(
-                                          spots: grafikVerileri,
+                                          spots: chartData,
                                           isCurved: true,
-                                          color: aktifRenk,
+                                          color: activeColor,
                                           barWidth: 4,
                                           isStrokeCapRound: true,
                                           dotData: const FlDotData(show: false),
                                           shadow: Shadow(
-                                            color: aktifRenk,
+                                            color: activeColor,
                                             blurRadius: 10,
                                           ),
                                           belowBarData: BarAreaData(
                                             show: true,
-                                            color: aktifRenk.withOpacity(0.1),
+                                            color: activeColor.withOpacity(0.1),
                                           ),
                                         ),
                                       ],
