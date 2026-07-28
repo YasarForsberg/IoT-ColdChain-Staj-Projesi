@@ -18,7 +18,7 @@ void notificationTapBackground(NotificationResponse response) {
   WidgetsFlutterBinding.ensureInitialized();
   DartPluginRegistrant.ensureInitialized();
 
-  if (response.actionId == 'stop_alarm' || response.payload == 'stop_alarm') {
+  if (response.actionId == 'stop_alarm') {
     FlutterBackgroundService().invoke('stopAlarmSound');
   }
 }
@@ -62,9 +62,7 @@ void onStart(ServiceInstance service) async {
 
   final AudioPlayer alarmPlayer = AudioPlayer(playerId: 'iot_emergency_alarm');
 
-  // STATE VARIABLES MUST BE DECLARED BEFORE LISTENERS
   String lastLogDate = '';
-  int sameDataCounter = 0;
 
   bool notifiedTemperature = false;
   bool notifiedServer = false;
@@ -90,7 +88,6 @@ void onStart(ServiceInstance service) async {
     bgNotification.cancel(id: 12);
     bgNotification.cancel(id: 13);
 
-    // RESET COUNTERS AND FLAGS
     if (alarmPlayedSensor) sensorErrorTime = DateTime.now();
     if (alarmPlayedTemperature) temperatureErrorTime = DateTime.now();
     if (alarmPlayedServer) serverErrorTime = DateTime.now();
@@ -108,14 +105,12 @@ void onStart(ServiceInstance service) async {
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
     ),
     onDidReceiveNotificationResponse: (NotificationResponse response) async {
-      if (response.actionId == 'stop_alarm' ||
-          response.payload == 'stop_alarm') {
+      if (response.actionId == 'stop_alarm') {
         await alarmPlayer.stop();
         bgNotification.cancel(id: 11);
         bgNotification.cancel(id: 12);
         bgNotification.cancel(id: 13);
 
-        // RESET COUNTERS AND FLAGS
         if (alarmPlayedSensor) sensorErrorTime = DateTime.now();
         if (alarmPlayedTemperature) temperatureErrorTime = DateTime.now();
         if (alarmPlayedServer) serverErrorTime = DateTime.now();
@@ -127,6 +122,76 @@ void onStart(ServiceInstance service) async {
     },
     onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
   );
+
+  Future<void> handleServerError() async {
+    serverErrorTime ??= DateTime.now();
+
+    if (service is AndroidServiceInstance) {
+      service.setForegroundNotificationInfo(
+        title: 'IoT Cold Chain (Connection Error)',
+        content: 'Cannot reach the central server.',
+      );
+    }
+
+    if (DateTime.now().difference(serverErrorTime!).inSeconds >= 60) {
+      if (!alarmPlayedServer) {
+        if (alarmPlayedSensor || alarmPlayedTemperature)
+          await alarmPlayer.stop();
+        sensorErrorTime = null;
+        temperatureErrorTime = null;
+        alarmPlayedSensor = false;
+        alarmPlayedTemperature = false;
+        notifiedSensor = false;
+        notifiedTemperature = false;
+
+        await alarmPlayer.setReleaseMode(ReleaseMode.loop);
+        await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
+
+        bgNotification.show(
+          id: 13,
+          title: '🚨 ALARM: CONNECTION LOST!',
+          body: 'CANNOT REACH SYSTEM FOR 1 MINUTE!',
+          notificationDetails: const NotificationDetails(
+            android: AndroidNotificationDetails(
+              'silent_visual_alarm',
+              'Visual Alarm System',
+              channelDescription: 'Alarms managed by audio player',
+              importance: Importance.max,
+              priority: Priority.high,
+              color: Colors.red,
+              enableVibration: true,
+              playSound: false,
+              fullScreenIntent: true,
+              actions: <AndroidNotificationAction>[
+                AndroidNotificationAction(
+                  'stop_alarm',
+                  'STOP ALARM',
+                  showsUserInterface: false,
+                  cancelNotification: true,
+                ),
+              ],
+            ),
+          ),
+        );
+        alarmPlayedServer = true;
+      }
+    } else if (!notifiedServer && !alarmPlayedServer) {
+      bgNotification.show(
+        id: 3,
+        title: '🔌 Server Connection Lost',
+        body: 'System is unreachable, monitoring...',
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'iot_channel',
+            'System Alerts',
+            importance: Importance.max,
+            priority: Priority.high,
+          ),
+        ),
+      );
+      notifiedServer = true;
+    }
+  }
 
   Timer.periodic(const Duration(seconds: 3), (timer) async {
     try {
@@ -150,84 +215,102 @@ void onStart(ServiceInstance service) async {
           String receivedDate = data['LogDate'];
 
           if (receivedDate == lastLogDate) {
-            sameDataCounter++;
-            if (sameDataCounter >= 3) {
-              sensorErrorTime ??= DateTime.now();
-
-              if (service is AndroidServiceInstance) {
-                service.setForegroundNotificationInfo(
-                  title: 'IoT Cold Chain (Sensor Disconnected)',
-                  content: 'No data received from hardware!',
-                );
-              }
-
-              if (DateTime.now().difference(sensorErrorTime!).inSeconds >= 60) {
-                if (!alarmPlayedSensor) {
-                  await alarmPlayer.setReleaseMode(ReleaseMode.loop);
-                  await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
-
-                  bgNotification.show(
-                    id: 11,
-                    title: '🚨 ALARM: SENSOR DISCONNECTED!',
-                    body: 'NO DATA FROM HARDWARE FOR 1 MINUTE!',
-                    payload: 'stop_alarm',
-                    notificationDetails: const NotificationDetails(
-                      android: AndroidNotificationDetails(
-                        'silent_visual_alarm',
-                        'Visual Alarm System',
-                        channelDescription:
-                            'Alarms managed by the audio player',
-                        importance: Importance.max,
-                        priority: Priority.high,
-                        color: Colors.red,
-                        enableVibration: true,
-                        playSound: false,
-                        fullScreenIntent: true,
-                        actions: <AndroidNotificationAction>[
-                          AndroidNotificationAction(
-                            'stop_alarm',
-                            'STOP ALARM',
-                            showsUserInterface: false,
-                            cancelNotification: true,
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                  alarmPlayedSensor = true;
-                }
-              } else if (!notifiedSensor && !alarmPlayedSensor) {
-                bgNotification.show(
-                  id: 1,
-                  title: '📡 Sensor Connection Lost',
-                  body: 'No data from hardware, monitoring status...',
-                  notificationDetails: const NotificationDetails(
-                    android: AndroidNotificationDetails(
-                      'iot_channel',
-                      'System Alerts',
-                      channelDescription: 'System Alerts',
-                      importance: Importance.max,
-                      priority: Priority.high,
-                    ),
-                  ),
-                );
-                notifiedSensor = true;
-              }
-            }
+            sensorErrorTime ??= DateTime.now();
           } else {
             if (alarmPlayedSensor) await alarmPlayer.stop();
             lastLogDate = receivedDate;
-            sameDataCounter = 0;
-            notifiedSensor = false;
             sensorErrorTime = null;
             alarmPlayedSensor = false;
+            notifiedSensor = false;
+          }
 
-            if (service is AndroidServiceInstance) {
-              service.setForegroundNotificationInfo(
-                title: 'IoT Cold Chain Active',
-                content:
-                    'Current Temp: ${currentTemperature.toStringAsFixed(1)}°C',
+          bool isSensorOfficiallyLost = false;
+          bool isSensorDataDelayed = false;
+
+          if (sensorErrorTime != null) {
+            int diffSeconds = DateTime.now()
+                .difference(sensorErrorTime!)
+                .inSeconds;
+
+            if (diffSeconds >= 10) {
+              isSensorDataDelayed = true;
+
+              if (service is AndroidServiceInstance) {
+                service.setForegroundNotificationInfo(
+                  title: 'IoT Cold Chain (Sensor Lost)',
+                  content: 'No new data from hardware!',
+                );
+              }
+            }
+
+            if (diffSeconds >= 60) {
+              isSensorOfficiallyLost = true;
+
+              if (!alarmPlayedSensor) {
+                if (alarmPlayedTemperature) await alarmPlayer.stop();
+                temperatureErrorTime = null;
+                alarmPlayedTemperature = false;
+                notifiedTemperature = false;
+
+                await alarmPlayer.setReleaseMode(ReleaseMode.loop);
+                await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
+
+                bgNotification.show(
+                  id: 11,
+                  title: '🚨 ALARM: SENSOR DISCONNECTED!',
+                  body: 'NO DATA FROM HARDWARE FOR 1 MINUTE!',
+                  notificationDetails: const NotificationDetails(
+                    android: AndroidNotificationDetails(
+                      'silent_visual_alarm',
+                      'Visual Alarm System',
+                      importance: Importance.max,
+                      priority: Priority.high,
+                      color: Colors.red,
+                      enableVibration: true,
+                      playSound: false,
+                      fullScreenIntent: true,
+                      actions: <AndroidNotificationAction>[
+                        AndroidNotificationAction(
+                          'stop_alarm',
+                          'STOP ALARM',
+                          showsUserInterface: false,
+                          cancelNotification: true,
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+                alarmPlayedSensor = true;
+              }
+            } else if (diffSeconds >= 10 &&
+                !notifiedSensor &&
+                !alarmPlayedSensor) {
+              bgNotification.show(
+                id: 1,
+                title: '📡 Sensor Connection Lost',
+                body: 'No data from hardware, monitoring...',
+                notificationDetails: const NotificationDetails(
+                  android: AndroidNotificationDetails(
+                    'iot_channel',
+                    'System Alerts',
+                    importance: Importance.max,
+                    priority: Priority.high,
+                  ),
+                ),
               );
+              notifiedSensor = true;
+            }
+          }
+
+          if (!isSensorOfficiallyLost) {
+            if (!isSensorDataDelayed) {
+              if (service is AndroidServiceInstance) {
+                service.setForegroundNotificationInfo(
+                  title: 'IoT Cold Chain Active',
+                  content:
+                      'Current Temp: ${currentTemperature.toStringAsFixed(1)}°C',
+                );
+              }
             }
 
             if (currentTemperature > 8.0) {
@@ -244,13 +327,10 @@ void onStart(ServiceInstance service) async {
                     title: '🚨 ALARM: CRITICAL TEMPERATURE!',
                     body:
                         'TEMPERATURE ABOVE THRESHOLD FOR 1 MINUTE (${currentTemperature.toStringAsFixed(1)}°C)!',
-                    payload: 'stop_alarm',
                     notificationDetails: const NotificationDetails(
                       android: AndroidNotificationDetails(
                         'silent_visual_alarm',
                         'Visual Alarm System',
-                        channelDescription:
-                            'Alarms managed by the audio player',
                         importance: Importance.max,
                         priority: Priority.high,
                         color: Colors.red,
@@ -280,7 +360,6 @@ void onStart(ServiceInstance service) async {
                     android: AndroidNotificationDetails(
                       'iot_channel',
                       'System Alerts',
-                      channelDescription: 'System Alerts',
                       importance: Importance.max,
                       priority: Priority.high,
                       color: Colors.orange,
@@ -291,135 +370,17 @@ void onStart(ServiceInstance service) async {
               }
             } else {
               if (alarmPlayedTemperature) await alarmPlayer.stop();
-              notifiedTemperature = false;
               temperatureErrorTime = null;
               alarmPlayedTemperature = false;
+              notifiedTemperature = false;
             }
           }
         }
       } else {
-        serverErrorTime ??= DateTime.now();
-
-        if (service is AndroidServiceInstance) {
-          service.setForegroundNotificationInfo(
-            title: 'IoT Cold Chain (Server Error)',
-            content: 'Central server is not responding.',
-          );
-        }
-
-        if (DateTime.now().difference(serverErrorTime!).inSeconds >= 60) {
-          if (!alarmPlayedServer) {
-            await alarmPlayer.setReleaseMode(ReleaseMode.loop);
-            await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
-
-            bgNotification.show(
-              id: 13,
-              title: '🚨 ALARM: SERVER CRASHED!',
-              body: 'NO RESPONSE FROM SERVER FOR 1 MINUTE!',
-              payload: 'stop_alarm',
-              notificationDetails: const NotificationDetails(
-                android: AndroidNotificationDetails(
-                  'silent_visual_alarm',
-                  'Visual Alarm System',
-                  channelDescription: 'Alarms managed by the audio player',
-                  importance: Importance.max,
-                  priority: Priority.high,
-                  color: Colors.red,
-                  enableVibration: true,
-                  playSound: false,
-                  fullScreenIntent: true,
-                  actions: <AndroidNotificationAction>[
-                    AndroidNotificationAction(
-                      'stop_alarm',
-                      'STOP ALARM',
-                      showsUserInterface: false,
-                      cancelNotification: true,
-                    ),
-                  ],
-                ),
-              ),
-            );
-            alarmPlayedServer = true;
-          }
-        } else if (!notifiedServer && !alarmPlayedServer) {
-          bgNotification.show(
-            id: 3,
-            title: '🔌 Server Error',
-            body: 'Central server is not responding.',
-            notificationDetails: const NotificationDetails(
-              android: AndroidNotificationDetails(
-                'iot_channel',
-                'System Alerts',
-                channelDescription: 'System Alerts',
-                importance: Importance.max,
-                priority: Priority.high,
-              ),
-            ),
-          );
-          notifiedServer = true;
-        }
+        await handleServerError();
       }
     } catch (e) {
-      serverErrorTime ??= DateTime.now();
-
-      if (service is AndroidServiceInstance) {
-        service.setForegroundNotificationInfo(
-          title: 'IoT Cold Chain (No Connection)',
-          content: 'Server unreachable.',
-        );
-      }
-
-      if (DateTime.now().difference(serverErrorTime!).inSeconds >= 60) {
-        if (!alarmPlayedServer) {
-          await alarmPlayer.setReleaseMode(ReleaseMode.loop);
-          await alarmPlayer.play(AssetSource('alarm_sesi.mp3'));
-
-          bgNotification.show(
-            id: 13,
-            title: '🚨 ALARM: CONNECTION LOST!',
-            body: 'CANNOT REACH SYSTEM FOR 1 MINUTE!',
-            payload: 'stop_alarm',
-            notificationDetails: const NotificationDetails(
-              android: AndroidNotificationDetails(
-                'silent_visual_alarm',
-                'Visual Alarm System',
-                channelDescription: 'Alarms managed by the audio player',
-                importance: Importance.max,
-                priority: Priority.high,
-                color: Colors.red,
-                enableVibration: true,
-                playSound: false,
-                fullScreenIntent: true,
-                actions: <AndroidNotificationAction>[
-                  AndroidNotificationAction(
-                    'stop_alarm',
-                    'STOP ALARM',
-                    showsUserInterface: false,
-                    cancelNotification: true,
-                  ),
-                ],
-              ),
-            ),
-          );
-          alarmPlayedServer = true;
-        }
-      } else if (!notifiedServer && !alarmPlayedServer) {
-        bgNotification.show(
-          id: 3,
-          title: '🔌 Server Connection Lost',
-          body: 'FastAPI server is unreachable.',
-          notificationDetails: const NotificationDetails(
-            android: AndroidNotificationDetails(
-              'iot_channel',
-              'System Alerts',
-              channelDescription: 'System Alerts',
-              importance: Importance.max,
-              priority: Priority.high,
-            ),
-          ),
-        );
-        notifiedServer = true;
-      }
+      await handleServerError();
     }
   });
 }
@@ -462,7 +423,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   bool thresholdExceeded = false;
   double currentTemperature = 0.0;
   final double THRESHOLD_VALUE = 8.0;
+
   List<FlSpot> chartData = [];
+  List<String> chartTimes = [];
+
   Timer? timer;
 
   final FlutterLocalNotificationsPlugin _notificationPlugin =
@@ -531,8 +495,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     await _notificationPlugin.initialize(
       settings: initSettings,
       onDidReceiveNotificationResponse: (NotificationResponse response) {
-        if (response.actionId == 'stop_alarm' ||
-            response.payload == 'stop_alarm') {
+        if (response.actionId == 'stop_alarm') {
           FlutterBackgroundService().invoke('stopAlarmSound');
         }
       },
@@ -637,14 +600,36 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           final last50Data = historyData.length > 50
               ? historyData.sublist(historyData.length - 50)
               : historyData;
+
           List<FlSpot> points = [];
+          List<String> times = [];
+
           for (int i = 0; i < last50Data.length; i++) {
             points.add(
               FlSpot(i.toDouble(), last50Data[i]['Temperature'].toDouble()),
             );
+
+            // Tarihi UTC'den ayrıştırıp yerel saate (.toLocal()) dönüştürüyoruz
+            String rawDate = last50Data[i]['LogDate'].toString();
+            String timeStr = "";
+            try {
+              // UTC Z ibaresi yoksa ekleyelim ki Flutter saati doğru algılasın
+              if (!rawDate.endsWith('Z') && !rawDate.contains('+')) {
+                rawDate += 'Z';
+              }
+
+              DateTime dt = DateTime.parse(rawDate).toLocal();
+              timeStr =
+                  "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}";
+            } catch (e) {
+              timeStr = rawDate.length > 16 ? rawDate.substring(11, 16) : "";
+            }
+            times.add(timeStr);
           }
+
           setState(() {
             chartData = points;
+            chartTimes = times;
           });
         }
       }
@@ -1079,8 +1064,66 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                               strokeWidth: 1,
                                             ),
                                       ),
-                                      titlesData: const FlTitlesData(
-                                        show: false,
+                                      titlesData: FlTitlesData(
+                                        show: true,
+                                        rightTitles: const AxisTitles(
+                                          sideTitles: SideTitles(
+                                            showTitles: false,
+                                          ),
+                                        ),
+                                        topTitles: const AxisTitles(
+                                          sideTitles: SideTitles(
+                                            showTitles: false,
+                                          ),
+                                        ),
+                                        leftTitles: AxisTitles(
+                                          sideTitles: SideTitles(
+                                            showTitles: true,
+                                            reservedSize: 35,
+                                            getTitlesWidget: (value, meta) {
+                                              return Padding(
+                                                padding: const EdgeInsets.only(
+                                                  right: 8.0,
+                                                ),
+                                                child: Text(
+                                                  '${value.toInt()}°',
+                                                  style: GoogleFonts.poppins(
+                                                    color: Colors.white54,
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w500,
+                                                  ),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ),
+                                        bottomTitles: AxisTitles(
+                                          sideTitles: SideTitles(
+                                            showTitles: true,
+                                            reservedSize: 30,
+                                            interval: 10,
+                                            getTitlesWidget: (value, meta) {
+                                              int index = value.toInt();
+                                              if (index >= 0 &&
+                                                  index < chartTimes.length) {
+                                                return Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                        top: 10.0,
+                                                      ),
+                                                  child: Text(
+                                                    chartTimes[index],
+                                                    style: GoogleFonts.poppins(
+                                                      color: Colors.white54,
+                                                      fontSize: 10,
+                                                    ),
+                                                  ),
+                                                );
+                                              }
+                                              return const Text('');
+                                            },
+                                          ),
+                                        ),
                                       ),
                                       borderData: FlBorderData(show: false),
                                       lineBarsData: [

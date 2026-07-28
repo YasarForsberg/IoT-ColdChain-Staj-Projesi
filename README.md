@@ -1,26 +1,18 @@
-🌡️ IoT Cold Chain Tracking System
+# 🌡️ IoT Cold Chain Tracking System
 
-This project is an end-to-end IoT ecosystem that ensures temperature data obtained from hardware (ESP32) is securely processed into a database and monitored in real-time via a mobile application.
-🚀 Technologies Used
+This project is an end-to-end IoT ecosystem that ensures simulated sensor data is securely processed into a database and monitored in real-time via a mobile application.
 
-    Database: MS SQL Server (Isolated using Docker Container architecture)
+## 🚀 Technologies Used
+* **Database:** MS SQL Server (Isolated using Docker Container architecture)
+* **Backend (API):** FastAPI (Python)
+* **Data Simulation:** Python (Gaussian distribution-based data simulation)
+* **Mobile Application:** Flutter (Cross-platform mobile client with background service & alerts)
 
-    Backend (API): FastAPI (Python)
+## ⚙️ Project Architecture
+1. The Python simulation engine generates realistic temperature data using statistical models.
+2. Temperatures that violate predefined thresholds (e.g., > 8°C) are logged into the database as anomalies.
+3. FastAPI establishes a secure bridge between the database and the mobile application, serving live and historical data in JSON format.
+4. The Flutter mobile app monitors the system in real-time, displaying charts and triggering background alarm notifications.
 
-    Data Simulation: Python (For testing prior to real hardware integration)
-
-    Mobile Application: Flutter (In development)
-
-    Hardware: ESP32 (In development)
-
-⚙️ Project Architecture
-
-    Python simulation (or ESP32) generates/reads sensor data.
-
-    Temperatures that violate the rules (e.g., > 8°C) are logged into the database as anomalies.
-
-    FastAPI establishes a secure bridge between the database and the mobile application, serving data in JSON format.
-
-🔒 Security
-
-In this project, database passwords and sensitive information are kept within a .env file, and their privacy is ensured by utilizing .gitignore.
+## 🔒 Security
+Database credentials and sensitive configurations are stored securely within a `.env` file and excluded from version control using `.gitignore`.
