@@ -3,12 +3,15 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'dart:ui';
+import 'dart:io'; // YENİ: Dosya işlemleri için
 import 'package:fl_chart/fl_chart.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart'; // YENİ: Dosya yolu bulmak için
+import 'package:share_plus/share_plus.dart'; // YENİ: Dosyayı paylaşmak/indirmek için
 
 // ==========================================
 // EDGE LOGGING YARDIMCI FONKSİYONU
@@ -1263,7 +1266,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                               if (index >= 0 &&
                                                   index < chartTimes.length) {
                                                 return Padding(
-                                                  // YENİ: Saatleri sağa kaydırmak için left: 25.0 eklendi
                                                   padding:
                                                       const EdgeInsets.only(
                                                         top: 10.0,
@@ -1335,8 +1337,50 @@ class _HistoricalDataScreenState extends State<HistoricalDataScreen> {
   DateTime? selectedDate;
   List<FlSpot> chartData = [];
   List<String> chartTimes = [];
+  List<dynamic> rawHistoryData =
+      []; // YENİ: Dışa aktarmak için ham veriyi tutuyoruz
   bool isLoading = false;
   String errorMessage = '';
+
+  // YENİ: Veriyi CSV olarak dışa aktarma ve paylaşma fonksiyonu
+  Future<void> _exportData() async {
+    if (rawHistoryData.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No data available to export.')),
+      );
+      return;
+    }
+
+    try {
+      // CSV başlıkları (Headers)
+      String csvData = "Temperature(C),Date_Time\n";
+
+      // Verileri döngüyle CSV formatında metne ekle
+      for (var item in rawHistoryData) {
+        csvData += "${item['Temperature']},${item['LogDate']}\n";
+      }
+
+      // Telefonun geçici dosyalar (cache) klasörünü bul
+      final directory = await getTemporaryDirectory();
+      String dateStr = selectedDate != null
+          ? "${selectedDate!.year}-${selectedDate!.month}-${selectedDate!.day}"
+          : "All";
+      final path = '${directory.path}/Temperature_Report_$dateStr.csv';
+
+      // Dosyayı oluştur ve metni içine yaz
+      final file = File(path);
+      await file.writeAsString(csvData);
+
+      // share_plus paketi ile dosyayı paylaşma ekranını aç
+      await Share.shareXFiles([
+        XFile(path),
+      ], text: 'Daily Temperature Report - $dateStr');
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error exporting data: $e')));
+    }
+  }
 
   Future<void> _selectDate(BuildContext context) async {
     final DateTime? picked = await showDatePicker(
@@ -1374,6 +1418,7 @@ class _HistoricalDataScreenState extends State<HistoricalDataScreen> {
       errorMessage = '';
       chartData = [];
       chartTimes = [];
+      rawHistoryData = [];
     });
 
     String formattedDate =
@@ -1399,6 +1444,7 @@ class _HistoricalDataScreenState extends State<HistoricalDataScreen> {
           return;
         }
 
+        rawHistoryData = data; // Dışa aktarmak için ham veriyi kaydet
         int targetDataPoints = 50;
 
         int chunkSize = (data.length / targetDataPoints).ceil();
@@ -1494,6 +1540,14 @@ class _HistoricalDataScreenState extends State<HistoricalDataScreen> {
           ),
         ),
         centerTitle: true,
+        // YENİ: Geçmiş Veri sayfasında İndir/Paylaş butonu
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.download_rounded, color: Colors.cyanAccent),
+            tooltip: 'Export as CSV',
+            onPressed: _exportData,
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -1727,6 +1781,42 @@ class _AlarmHistoryScreenState extends State<AlarmHistoryScreen> {
     _fetchAlarms();
   }
 
+  // YENİ: Alarm Kayıtlarını CSV olarak dışa aktarma
+  Future<void> _exportAlarms() async {
+    if (alarms.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No alarms available to export.')),
+      );
+      return;
+    }
+
+    try {
+      // CSV başlıkları
+      String csvData = "Description,Date_Time,Type,Temperature(C)\n";
+
+      // Hataları döngüyle ekle
+      for (var alarm in alarms) {
+        String temp = alarm['Temperature'] != null
+            ? alarm['Temperature'].toString()
+            : "N/A";
+        csvData +=
+            "${alarm['Description']},${alarm['DetectedAt']},${alarm['Type']},$temp\n";
+      }
+
+      final directory = await getTemporaryDirectory();
+      final path = '${directory.path}/System_Alarm_Logs.csv';
+
+      final file = File(path);
+      await file.writeAsString(csvData);
+
+      await Share.shareXFiles([XFile(path)], text: 'System Alarm Logs Report');
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error exporting alarms: $e')));
+    }
+  }
+
   Future<void> _clearLocalLogs() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('local_alarms');
@@ -1868,6 +1958,12 @@ class _AlarmHistoryScreenState extends State<AlarmHistoryScreen> {
         ),
         centerTitle: true,
         actions: [
+          // YENİ: Alarmları İndir/Paylaş Butonu
+          IconButton(
+            icon: const Icon(Icons.download_rounded, color: Colors.cyanAccent),
+            tooltip: 'Export Alarms',
+            onPressed: _exportAlarms,
+          ),
           IconButton(
             icon: const Icon(
               Icons.delete_outline_rounded,
@@ -1969,7 +2065,6 @@ class _AlarmHistoryScreenState extends State<AlarmHistoryScreen> {
                             color: Colors.cyanAccent,
                             backgroundColor: const Color(0xFF1D2235),
                             onRefresh: _fetchAlarms,
-                            // YENİ: Liste boş olsa bile aşağı çekilebilir yapıldı (AlwaysScrollableScrollPhysics)
                             child: ListView.builder(
                               physics: const AlwaysScrollableScrollPhysics(),
                               padding: const EdgeInsets.all(16.0),

@@ -42,6 +42,8 @@ dependencies:
   flutter_background_service_android: ^6.3.1
   audioplayers: ^6.8.1
   shared_preferences: ^2.5.5
+  path_provider: ^2.1.6
+  share_plus: ^13.3.0
 
 dev_dependencies:
   flutter_test:
