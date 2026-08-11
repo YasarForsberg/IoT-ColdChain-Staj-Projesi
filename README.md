@@ -1,18 +1,22 @@
-# 🌡️ IoT Cold Chain Tracking System
+# IoT Cold Chain Monitor 🌡️❄️
 
-This project is an end-to-end IoT ecosystem that ensures simulated sensor data is securely processed into a database and monitored in real-time via a mobile application.
+An end-to-end IoT monitoring solution designed to track temperature data in real-time, detect anomalies, and ensure cold chain integrity. 
 
-## 🚀 Technologies Used
-* **Database:** MS SQL Server (Isolated using Docker Container architecture)
-* **Backend (API):** FastAPI (Python)
-* **Data Simulation:** Python (Gaussian distribution-based data simulation)
-* **Mobile Application:** Flutter (Cross-platform mobile client with background service & alerts)
+## 🚀 Features
 
-## ⚙️ Project Architecture
-1. The Python simulation engine generates realistic temperature data using statistical models.
-2. Temperatures that violate predefined thresholds (e.g., > 8°C) are logged into the database as anomalies.
-3. FastAPI establishes a secure bridge between the database and the mobile application, serving live and historical data in JSON format.
-4. The Flutter mobile app monitors the system in real-time, displaying charts and triggering background alarm notifications.
+* **Real-Time Monitoring:** Live temperature tracking with visual indicators.
+* **Background Service:** Continuous monitoring even when the application is closed.
+* **Smart Alerts:** Instant local notifications and visual alarms for critical temperature thresholds and sensor disconnections.
+* **Historical Analysis:** Interactive charts for viewing past temperature logs.
+* **Data Export:** Export and share anomaly logs and temperature history as CSV files.
 
-## 🔒 Security
-Database credentials and sensitive configurations are stored securely within a `.env` file and excluded from version control using `.gitignore`.
+## 🛠️ Tech Stack
+
+* **Mobile Application:** Flutter (Dart)
+* **Backend API:** FastAPI (Python)
+* **Database:** Microsoft SQL Server (Dockerized)
+* **Hardware Simulation:** Python-based mock sensor data generator
+
+## 👤 Author
+
+**Muhammed Yaşar Karaçam**
