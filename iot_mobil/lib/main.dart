@@ -3,18 +3,18 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'dart:ui';
-import 'dart:io'; // YENİ: Dosya işlemleri için
+import 'dart:io';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:path_provider/path_provider.dart'; // YENİ: Dosya yolu bulmak için
-import 'package:share_plus/share_plus.dart'; // YENİ: Dosyayı paylaşmak/indirmek için
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 // ==========================================
-// EDGE LOGGING YARDIMCI FONKSİYONU
+// EDGE LOGGING UTILITY FUNCTION
 // ==========================================
 Future<void> saveLocalLog(String description, String type) async {
   final prefs = await SharedPreferences.getInstance();
@@ -67,8 +67,7 @@ Future<void> initializeService() async {
 
   await flutterLocalNotificationsPlugin
       .resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin
-      >()
+          AndroidFlutterLocalNotificationsPlugin>()
       ?.createNotificationChannel(channel);
 
   await service.configure(
@@ -261,9 +260,8 @@ void onStart(ServiceInstance service) async {
           bool isSensorDataDelayed = false;
 
           if (sensorErrorTime != null) {
-            int diffSeconds = DateTime.now()
-                .difference(sensorErrorTime!)
-                .inSeconds;
+            int diffSeconds =
+                DateTime.now().difference(sensorErrorTime!).inSeconds;
 
             if (diffSeconds >= 10) {
               isSensorDataDelayed = true;
@@ -545,10 +543,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     );
 
     final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
-        _notificationPlugin
-            .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin
-            >();
+        _notificationPlugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
     if (androidImplementation != null) {
       await androidImplementation.requestNotificationsPermission();
     }
@@ -1101,8 +1097,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                               TweenAnimationBuilder<double>(
                                 tween: Tween<double>(
                                   begin: 0,
-                                  end:
-                                      (status ==
+                                  end: (status ==
                                           ConnectionStateEnum.serverError)
                                       ? 0
                                       : (currentTemperature / 30.0).clamp(
@@ -1138,8 +1133,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                         color: activeColor,
                                         blurRadius:
                                             status == ConnectionStateEnum.active
-                                            ? 20
-                                            : 5,
+                                                ? 20
+                                                : 5,
                                       ),
                                     ],
                                   ),
@@ -1212,11 +1207,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                         drawVerticalLine: false,
                                         getDrawingHorizontalLine: (value) =>
                                             FlLine(
-                                              color: Colors.white.withOpacity(
-                                                0.1,
-                                              ),
-                                              strokeWidth: 1,
-                                            ),
+                                          color: Colors.white.withOpacity(
+                                            0.1,
+                                          ),
+                                          strokeWidth: 1,
+                                        ),
                                       ),
                                       titlesData: FlTitlesData(
                                         show: true,
@@ -1268,9 +1263,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                                 return Padding(
                                                   padding:
                                                       const EdgeInsets.only(
-                                                        top: 10.0,
-                                                        left: 25.0,
-                                                      ),
+                                                    top: 10.0,
+                                                    left: 25.0,
+                                                  ),
                                                   child: Text(
                                                     chartTimes[index],
                                                     style: GoogleFonts.poppins(
@@ -1337,12 +1332,10 @@ class _HistoricalDataScreenState extends State<HistoricalDataScreen> {
   DateTime? selectedDate;
   List<FlSpot> chartData = [];
   List<String> chartTimes = [];
-  List<dynamic> rawHistoryData =
-      []; // YENİ: Dışa aktarmak için ham veriyi tutuyoruz
+  List<dynamic> rawHistoryData = [];
   bool isLoading = false;
   String errorMessage = '';
 
-  // YENİ: Veriyi CSV olarak dışa aktarma ve paylaşma fonksiyonu
   Future<void> _exportData() async {
     if (rawHistoryData.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1352,26 +1345,21 @@ class _HistoricalDataScreenState extends State<HistoricalDataScreen> {
     }
 
     try {
-      // CSV başlıkları (Headers)
       String csvData = "Temperature(C),Date_Time\n";
 
-      // Verileri döngüyle CSV formatında metne ekle
       for (var item in rawHistoryData) {
         csvData += "${item['Temperature']},${item['LogDate']}\n";
       }
 
-      // Telefonun geçici dosyalar (cache) klasörünü bul
       final directory = await getTemporaryDirectory();
       String dateStr = selectedDate != null
           ? "${selectedDate!.year}-${selectedDate!.month}-${selectedDate!.day}"
           : "All";
       final path = '${directory.path}/Temperature_Report_$dateStr.csv';
 
-      // Dosyayı oluştur ve metni içine yaz
       final file = File(path);
       await file.writeAsString(csvData);
 
-      // share_plus paketi ile dosyayı paylaşma ekranını aç
       await Share.shareXFiles([
         XFile(path),
       ], text: 'Daily Temperature Report - $dateStr');
@@ -1444,7 +1432,7 @@ class _HistoricalDataScreenState extends State<HistoricalDataScreen> {
           return;
         }
 
-        rawHistoryData = data; // Dışa aktarmak için ham veriyi kaydet
+        rawHistoryData = data;
         int targetDataPoints = 50;
 
         int chunkSize = (data.length / targetDataPoints).ceil();
@@ -1540,7 +1528,6 @@ class _HistoricalDataScreenState extends State<HistoricalDataScreen> {
           ),
         ),
         centerTitle: true,
-        // YENİ: Geçmiş Veri sayfasında İndir/Paylaş butonu
         actions: [
           IconButton(
             icon: const Icon(Icons.download_rounded, color: Colors.cyanAccent),
@@ -1781,7 +1768,7 @@ class _AlarmHistoryScreenState extends State<AlarmHistoryScreen> {
     _fetchAlarms();
   }
 
-  // YENİ: Alarm Kayıtlarını CSV olarak dışa aktarma
+  // NEW: Exporting Alarm Logs via Share_Plus
   Future<void> _exportAlarms() async {
     if (alarms.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1791,10 +1778,8 @@ class _AlarmHistoryScreenState extends State<AlarmHistoryScreen> {
     }
 
     try {
-      // CSV başlıkları
       String csvData = "Description,Date_Time,Type,Temperature(C)\n";
 
-      // Hataları döngüyle ekle
       for (var alarm in alarms) {
         String temp = alarm['Temperature'] != null
             ? alarm['Temperature'].toString()
@@ -1856,9 +1841,8 @@ class _AlarmHistoryScreenState extends State<AlarmHistoryScreen> {
       await prefs.reload();
 
       List<String> localLogsString = prefs.getStringList('local_alarms') ?? [];
-      List<dynamic> localAlarms = localLogsString
-          .map((log) => json.decode(log))
-          .toList();
+      List<dynamic> localAlarms =
+          localLogsString.map((log) => json.decode(log)).toList();
 
       List<dynamic> combinedAlarms = [...dbAlarms, ...localAlarms];
 
@@ -1880,9 +1864,8 @@ class _AlarmHistoryScreenState extends State<AlarmHistoryScreen> {
       await prefs.reload();
 
       List<String> localLogsString = prefs.getStringList('local_alarms') ?? [];
-      List<dynamic> localAlarms = localLogsString
-          .map((log) => json.decode(log))
-          .toList();
+      List<dynamic> localAlarms =
+          localLogsString.map((log) => json.decode(log)).toList();
 
       localAlarms.sort((a, b) {
         DateTime dateA = DateTime.parse(a['DetectedAt'].toString());
@@ -1958,7 +1941,6 @@ class _AlarmHistoryScreenState extends State<AlarmHistoryScreen> {
         ),
         centerTitle: true,
         actions: [
-          // YENİ: Alarmları İndir/Paylaş Butonu
           IconButton(
             icon: const Icon(Icons.download_rounded, color: Colors.cyanAccent),
             tooltip: 'Export Alarms',
